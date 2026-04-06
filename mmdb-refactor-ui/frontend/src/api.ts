@@ -100,3 +100,28 @@ export async function writeTestFiles(
   })
   return res.data
 }
+
+export async function gitCommitTestFiles(
+  rel_source_path: string,
+  fn_name: string,
+  variant: 'mmdb' | 'gemmi' | 'both',
+  commit_message: string,
+  onChunk: (chunk: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${BASE}/tests/git-commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rel_source_path, fn_name, variant, commit_message }),
+    signal,
+  })
+  if (!response.ok) throw new Error(`Server error: ${response.status}`)
+  if (!response.body) throw new Error('No response body')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    onChunk(decoder.decode(value, { stream: true }))
+  }
+}

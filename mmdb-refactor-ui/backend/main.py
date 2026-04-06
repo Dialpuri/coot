@@ -202,6 +202,13 @@ class CompileRunRequest(BaseModel):
     test_code: str         # current textarea content (written before compile)
 
 
+class GitCommitRequest(BaseModel):
+    rel_source_path: str
+    fn_name: str
+    variant: str           # "mmdb" | "gemmi" | "both"
+    commit_message: str
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def load_progress() -> dict:
     if PROGRESS_PATH.exists():
@@ -667,4 +674,58 @@ async def compile_and_run(req: CompileRunRequest):
         code = run_proc.returncode
         yield f"\n{'[PASSED]' if code == 0 else f'[FAILED]  exit code {code}'}\n"
 
-    return StreamingResponse(stream_output(), media_type="text/plain")
+    return StreamingResponse(stream_output(), media_type="text/plain")  # compile-run
+
+
+@app.post("/api/tests/git-commit")
+async def git_commit_test(req: GitCommitRequest):
+    """Git-add and commit test files. The caller must confirm before invoking."""
+    variants = ["mmdb", "gemmi"] if req.variant == "both" else [req.variant]
+    files_to_add = []
+    for v in variants:
+        p = get_test_file_path(req.rel_source_path, req.fn_name, v)
+        if p.exists():
+            files_to_add.append(str(p))
+
+    async def stream_output():
+        if not files_to_add:
+            yield "[GIT ERROR] No existing test files found to commit — write them first\n"
+            return
+
+        rel_paths = [str(Path(f).relative_to(_coot_root)) for f in files_to_add]
+        yield f"[GIT ADD]  {', '.join(rel_paths)}\n"
+
+        add_proc = await asyncio.create_subprocess_shell(
+            "git add " + " ".join(f'"{f}"' for f in files_to_add),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(_coot_root),
+        )
+        assert add_proc.stdout is not None
+        async for raw in add_proc.stdout:
+            yield raw.decode(errors="replace")
+        await add_proc.wait()
+
+        if add_proc.returncode != 0:
+            yield f"[GIT ADD FAILED]  exit code {add_proc.returncode}\n"
+            return
+
+        # Escape any double-quotes in the message
+        safe_msg = req.commit_message.replace('"', "'")
+        commit_proc = await asyncio.create_subprocess_shell(
+            f'git commit -m "{safe_msg}"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(_coot_root),
+        )
+        assert commit_proc.stdout is not None
+        async for raw in commit_proc.stdout:
+            yield raw.decode(errors="replace")
+        await commit_proc.wait()
+
+        if commit_proc.returncode != 0:
+            yield f"\n[GIT COMMIT FAILED]  exit code {commit_proc.returncode}\n"
+        else:
+            yield "\n[COMMITTED]\n"
+
+    return StreamingResponse(stream_output(), media_type="text/plain")  # git-commit

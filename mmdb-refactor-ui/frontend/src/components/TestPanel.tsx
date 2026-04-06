@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { FileDetail, FunctionRecord } from '../types'
-import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction } from '../api'
+import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles } from '../api'
 import type { TestFilePaths } from '../api'
 import { useHorizontalSplit } from '../hooks/useResize'
 import { highlightCppWithLines, highlightForEditor } from '../highlight'
@@ -98,6 +98,13 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
   const [terminal, setTerminal] = useState('')
   const [compiling, setCompiling] = useState<false | 'mmdb' | 'gemmi'>(false)
   const [showTerminal, setShowTerminal] = useState(false)
+
+  // Git commit dialog
+  const [commitDialog, setCommitDialog] = useState<{
+    variant: 'mmdb' | 'gemmi' | 'both'
+    message: string
+  } | null>(null)
+  const [committing, setCommitting] = useState(false)
   const terminalRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const compileAbortRef = useRef<AbortController | null>(null)
@@ -296,6 +303,33 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
       if (!(e instanceof Error && e.name === 'AbortError')) setError(String(e))
     } finally {
       setCompiling(false)
+    }
+  }
+
+  const openCommitDialog = (variant: 'mmdb' | 'gemmi' | 'both') => {
+    if (!fn) return
+    const short = fn.name.split('::').pop() ?? fn.name
+    setCommitDialog({ variant, message: `Add GTest for ${short} (${variant})` })
+  }
+
+  const handleCommit = async () => {
+    if (!file || !fn || !commitDialog) return
+    setCommitting(true)
+    setShowTerminal(true)
+    setTerminal(prev => prev + '\n')
+    try {
+      await gitCommitTestFiles(
+        file.rel_path,
+        fn.name,
+        commitDialog.variant,
+        commitDialog.message,
+        chunk => setTerminal(prev => prev + chunk),
+      )
+    } catch (e) {
+      setTerminal(prev => prev + `[ERROR] ${String(e)}\n`)
+    } finally {
+      setCommitting(false)
+      setCommitDialog(null)
     }
   }
 
@@ -554,8 +588,82 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
           <button onClick={() => navigator.clipboard.writeText(gemmiTest).catch(console.error)} disabled={!gemmiTest} className="btn btn-ghost btn-sm">
             Copy Gemmi
           </button>
+          <div className="w-px h-4 bg-zinc-700 mx-1 self-center" />
+          <button
+            onClick={() => openCommitDialog('both')}
+            disabled={!filePaths?.mmdb_exists && !filePaths?.gemmi_exists}
+            className="btn btn-ghost btn-sm text-zinc-500 hover:text-zinc-200"
+            title="Git add + commit the written test files"
+          >
+            Commit…
+          </button>
         </div>
       </div>
+
+      {/* Git commit confirmation dialog */}
+      {commitDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl w-[480px] max-w-[90vw] p-5">
+            <h3 className="text-sm font-semibold text-zinc-100 mb-1">Commit test files</h3>
+            <p className="text-xs text-zinc-500 mb-4">
+              This will run <code className="text-zinc-300">git add</code> and{' '}
+              <code className="text-zinc-300">git commit</code> for the written{' '}
+              <span className="text-zinc-300">{commitDialog.variant}</span> test file(s).
+              Only files that exist on disk will be included.
+            </p>
+
+            {/* Variant selector */}
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs text-zinc-500 w-16">Variant</span>
+              <div className="flex border border-zinc-700 rounded overflow-hidden">
+                {(['mmdb', 'gemmi', 'both'] as const).map(v => (
+                  <button
+                    key={v}
+                    onClick={() => setCommitDialog(d => d ? { ...d, variant: v } : d)}
+                    className={`px-3 py-1 text-xs transition-colors ${
+                      commitDialog.variant === v
+                        ? 'bg-zinc-700 text-zinc-100'
+                        : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Commit message */}
+            <div className="mb-4">
+              <label className="text-xs text-zinc-500 block mb-1">Commit message</label>
+              <input
+                type="text"
+                value={commitDialog.message}
+                onChange={e => setCommitDialog(d => d ? { ...d, message: e.target.value } : d)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-blue-500 font-mono"
+                autoFocus
+                onKeyDown={e => { if (e.key === 'Enter' && commitDialog.message.trim()) handleCommit() }}
+              />
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setCommitDialog(null)}
+                disabled={committing}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCommit}
+                disabled={committing || !commitDialog.message.trim()}
+                className="btn btn-primary"
+              >
+                {committing ? 'Committing…' : 'Commit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
