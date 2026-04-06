@@ -45,7 +45,7 @@ function addLineNumbers(code: string, startLine: number): string {
 export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Props) {
   const [sourceCode, setSourceCode] = useState<string>('')
   const [gemmiCode, setGemmiCode] = useState<string>('')
-  const [model, setModel] = useState('codellama')
+  const [model, setModel] = useState('llama3.2')
   const [additionalInstructions, setAdditionalInstructions] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [sourceLoading, setSourceLoading] = useState(false)
@@ -61,7 +61,7 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
     }
     setSourceLoading(true)
     setError(null)
-    fetchSource(file.rel_path, fn.line, fn.end_line + 100)
+    fetchSource(file.rel_path, fn.line, fn.end_line)
       .then(data => setSourceCode(data.lines))
       .catch(e => setError(String(e)))
       .finally(() => setSourceLoading(false))

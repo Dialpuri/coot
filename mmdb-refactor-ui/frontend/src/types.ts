@@ -38,3 +38,13 @@ export interface FilesResponse {
 
 export type ProgressStatus = 'done' | 'in_progress' | 'skipped' | 'todo';
 export type ProgressMap = Record<string, ProgressStatus>;
+
+export interface TestRecord {
+  mmdb_test: string;
+  gemmi_test: string;
+  notes: string;
+  status: 'draft' | 'reviewed' | 'done';
+}
+export type TestsMap = Record<string, TestRecord>;
+
+export type AppMode = 'refactor' | 'tests';

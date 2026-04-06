@@ -1,10 +1,13 @@
-import type { FileDetail, FunctionRecord, ProgressMap } from '../types'
+import React from 'react'
+import type { FileDetail, FunctionRecord, ProgressMap, TestsMap, AppMode } from '../types'
 
 interface Props {
   file: FileDetail | null
   onSelectFunction: (fn: FunctionRecord) => void
   selectedFn: FunctionRecord | null
   progress: ProgressMap
+  tests: TestsMap
+  mode: AppMode
 }
 
 function progressBadge(status: string | undefined) {
@@ -20,6 +23,25 @@ function progressBadge(status: string | undefined) {
   }
 }
 
+function testBadge(status: string | undefined, hasMmdb: boolean, hasGemmi: boolean) {
+  if (!status && !hasMmdb && !hasGemmi) {
+    return <span className="px-1.5 py-0.5 rounded text-xs bg-gray-700 text-gray-400">no test</span>
+  }
+  const parts: React.ReactNode[] = []
+  if (hasMmdb) parts.push(<span key="m" className="px-1 py-0.5 rounded text-xs bg-yellow-900/60 text-yellow-300 border border-yellow-800/40">M</span>)
+  if (hasGemmi) parts.push(<span key="g" className="px-1 py-0.5 rounded text-xs bg-indigo-900/60 text-indigo-300 border border-indigo-800/40">G</span>)
+
+  const statusEl = (() => {
+    switch (status) {
+      case 'done': return <span key="s" className="px-1.5 py-0.5 rounded text-xs bg-green-700 text-green-100">done</span>
+      case 'reviewed': return <span key="s" className="px-1.5 py-0.5 rounded text-xs bg-blue-700 text-blue-100">reviewed</span>
+      default: return <span key="s" className="px-1.5 py-0.5 rounded text-xs bg-gray-600 text-gray-300">draft</span>
+    }
+  })()
+
+  return <div className="flex gap-1 items-center">{parts}{statusEl}</div>
+}
+
 function shortFnName(name: string): string {
   // Show just the last two segments of a qualified name like coot::util::foo
   const parts = name.split('::')
@@ -29,7 +51,7 @@ function shortFnName(name: string): string {
   return name
 }
 
-export default function FunctionList({ file, onSelectFunction, selectedFn, progress }: Props) {
+export default function FunctionList({ file, onSelectFunction, selectedFn, progress, tests, mode }: Props) {
   if (!file) {
     return (
       <div className="flex flex-col h-full">
@@ -79,8 +101,10 @@ export default function FunctionList({ file, onSelectFunction, selectedFn, progr
           </div>
         )}
         {functions.map(fn => {
-          const key = `${file.rel_path}::${fn.name}`
-          const status = progress[key]
+          const refactorKey = `${file.rel_path}::${fn.name}`
+          const testKey = `${file.rel_path}::${fn.name}:${fn.line}`
+          const refactorStatus = progress[refactorKey]
+          const testRecord = tests[testKey]
           const isSelected = selectedFn?.name === fn.name && selectedFn?.line === fn.line
           const displaySymbols = fn.mmdb_symbols.slice(0, 2)
           const extraSymbols = fn.mmdb_symbols.length - 2
@@ -126,7 +150,14 @@ export default function FunctionList({ file, onSelectFunction, selectedFn, progr
               </div>
 
               <div className="mt-1.5">
-                {progressBadge(status)}
+                {mode === 'tests'
+                  ? testBadge(
+                      testRecord?.status,
+                      !!(testRecord?.mmdb_test),
+                      !!(testRecord?.gemmi_test)
+                    )
+                  : progressBadge(refactorStatus)
+                }
               </div>
             </button>
           )

@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Stats, FilesResponse, FileDetail, ProgressMap, ProgressStatus } from './types'
+import type { Stats, FilesResponse, FileDetail, ProgressMap, ProgressStatus, TestsMap } from './types'
 
 const BASE = '/api'
 
@@ -43,4 +43,60 @@ export async function fetchProgress(): Promise<ProgressMap> {
 
 export async function postProgress(key: string, status: ProgressStatus | 'todo'): Promise<void> {
   await axios.post(`${BASE}/progress`, { key, status })
+}
+
+export async function fetchTests(): Promise<TestsMap> {
+  const res = await axios.get<TestsMap>(`${BASE}/tests`)
+  return res.data
+}
+
+export async function fetchTestForFunction(
+  rel_source_path: string,
+  fn_name: string,
+  fn_line: number,
+): Promise<{ mmdb_test: string; gemmi_test: string; notes: string; status: string }> {
+  const res = await axios.get(`${BASE}/tests/load`, {
+    params: { rel_source_path, fn_name, fn_line },
+  })
+  return res.data
+}
+
+export async function saveTest(
+  key: string,
+  mmdb_test: string,
+  gemmi_test: string,
+  notes: string,
+  status: string
+): Promise<void> {
+  await axios.post(`${BASE}/tests`, { key, mmdb_test, gemmi_test, notes, status })
+}
+
+export interface TestFilePaths {
+  mmdb: string
+  gemmi: string
+  mmdb_exists: boolean
+  gemmi_exists: boolean
+}
+
+export async function fetchTestFilePaths(
+  rel_source_path: string,
+  fn_name: string
+): Promise<TestFilePaths> {
+  const res = await axios.get<TestFilePaths>(`${BASE}/tests/file-paths`, {
+    params: { rel_source_path, fn_name },
+  })
+  return res.data
+}
+
+export async function writeTestFiles(
+  rel_source_path: string,
+  fn_name: string,
+  fn_line: number,
+  mmdb_test: string,
+  gemmi_test: string
+): Promise<{ written: Record<string, string> }> {
+  const res = await axios.post(`${BASE}/tests/write`, {
+    rel_source_path, fn_name, fn_line, mmdb_test, gemmi_test,
+  })
+  return res.data
 }

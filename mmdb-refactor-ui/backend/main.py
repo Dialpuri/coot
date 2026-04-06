@@ -1,6 +1,9 @@
 import argparse
+import asyncio
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,14 +17,45 @@ from pydantic import BaseModel
 _parser = argparse.ArgumentParser(description="MMDB Refactor Manager backend")
 _parser.add_argument(
     "--report",
-    default="/Users/dialpuri/lmb/coot/mmdb_usage_report.json",
+    default="/Users/dialpuri/lmb/coot/mmdb-recon/mmdb_usage_report.json",
     help="Path to mmdb_usage_report.json produced by the AST tool",
+)
+_parser.add_argument(
+    "--cxx", default="c++",
+    help="C++ compiler to use for test compilation",
+)
+_parser.add_argument(
+    "--cxx-flags", default="",
+    help="Extra flags to pass to the compiler (e.g. -I/extra/include)",
 )
 _args, _ = _parser.parse_known_args()
 
 REPORT_PATH = _args.report
 PROGRESS_PATH = Path(__file__).parent / "progress.json"
+TESTS_PATH = Path(__file__).parent / "tests.json"
 OLLAMA_URL = "http://localhost:11434/api/generate"
+
+
+# ── GTest detection ───────────────────────────────────────────────────────────
+def _detect_gtest_flags() -> str:
+    """Try pkg-config first, then fall back to common install prefixes."""
+    try:
+        flags = subprocess.check_output(
+            ["pkg-config", "--cflags", "--libs", "gtest", "gtest_main"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if flags:
+            return flags
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    for prefix in ["/opt/homebrew", "/usr/local", "/usr"]:
+        if Path(f"{prefix}/include/gtest/gtest.h").exists():
+            return f"-I{prefix}/include -L{prefix}/lib -lgtest -lgtest_main"
+    return "-lgtest -lgtest_main"
+
+
+_gtest_flags = _detect_gtest_flags()
+print(f"GTest flags: {_gtest_flags}")
 
 # ── Strategy context injected into every refactor prompt ────────────────────
 STRATEGY_CONTEXT = """You are an expert C++ developer helping to migrate code from the MMDB2 structural biology library to the Gemmi library.
@@ -135,6 +169,39 @@ class ProgressUpdate(BaseModel):
     status: str
 
 
+class TestRecord(BaseModel):
+    key: str
+    mmdb_test: str = ""
+    gemmi_test: str = ""
+    notes: str = ""
+    status: str = "draft"  # draft | reviewed | done
+
+
+class GenerateTestRequest(BaseModel):
+    function_name: str
+    source_code: str
+    mmdb_symbols: list[str]
+    target: str = "both"   # "mmdb" | "gemmi" | "both"
+    model: str = "llama3.2"
+    additional_instructions: str = ""
+
+
+class WriteTestRequest(BaseModel):
+    rel_source_path: str   # e.g. "coot-utils/coot-coord-utils.cc"
+    fn_name: str           # e.g. "coot::util::delete_residue_references_in_header_info"
+    fn_line: int
+    mmdb_test: str = ""
+    gemmi_test: str = ""
+
+
+class CompileRunRequest(BaseModel):
+    rel_source_path: str
+    fn_name: str
+    fn_line: int
+    variant: str           # "mmdb" | "gemmi"
+    test_code: str         # current textarea content (written before compile)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def load_progress() -> dict:
     if PROGRESS_PATH.exists():
@@ -146,6 +213,52 @@ def load_progress() -> dict:
 def save_progress(data: dict) -> None:
     with open(PROGRESS_PATH, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def load_tests() -> dict:
+    if TESTS_PATH.exists():
+        with open(TESTS_PATH, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_tests(data: dict) -> None:
+    with open(TESTS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def sanitize_fn_name(name: str) -> str:
+    """coot::util::foo_bar  ->  coot_util_foo_bar"""
+    return re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_')
+
+
+def get_test_file_path(rel_source_path: str, fn_name: str, variant: str) -> Path:
+    """Return the absolute path where a test .cc file should be written."""
+    source_dir = Path(rel_source_path).parent          # e.g.  coot-utils
+    tests_dir  = Path(_coot_root) / source_dir / "tests"
+    safe       = sanitize_fn_name(fn_name)
+    return tests_dir / f"{safe}_{variant}_test.cc"
+
+
+def wrap_test_content(content: str, variant: str, fn_name: str) -> str:
+    """Ensure the .cc file has a gtest header and a main()."""
+    content = content.strip()
+    needs_header = "#include <gtest/gtest.h>" not in content
+    needs_main   = "RUN_ALL_TESTS()" not in content and "int main(" not in content
+
+    parts: list[str] = []
+    if needs_header:
+        parts.append(f"// Auto-generated {variant.upper()} test for {fn_name}")
+        parts.append("#include <gtest/gtest.h>")
+        parts.append("")
+    parts.append(content)
+    if needs_main:
+        parts.append("")
+        parts.append("int main(int argc, char **argv) {")
+        parts.append("  ::testing::InitGoogleTest(&argc, argv);")
+        parts.append("  return RUN_ALL_TESTS();")
+        parts.append("}")
+    return "\n".join(parts) + "\n"
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -294,7 +407,7 @@ async def refactor(req: RefactorRequest):
                         except json.JSONDecodeError:
                             pass
 
-    return StreamingResponse(stream_ollama(), media_type="text/plain")
+    return StreamingResponse(stream_ollama(), media_type="text/plain")  # /api/refactor
 
 
 @app.get("/api/progress")
@@ -308,3 +421,250 @@ def update_progress(update: ProgressUpdate):
     data[update.key] = update.status
     save_progress(data)
     return {"ok": True, "key": update.key, "status": update.status}
+
+
+# ── Test endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/api/tests")
+def get_tests():
+    return load_tests()
+
+
+@app.post("/api/tests")
+def save_test(record: TestRecord):
+    data = load_tests()
+    data[record.key] = {
+        "mmdb_test": record.mmdb_test,
+        "gemmi_test": record.gemmi_test,
+        "notes": record.notes,
+        "status": record.status,
+    }
+    save_tests(data)
+    return {"ok": True, "key": record.key}
+
+
+@app.get("/api/tests/load")
+def load_test_for_function(
+    rel_source_path: str = Query(...),
+    fn_name: str = Query(...),
+    fn_line: int = Query(...),
+):
+    """Return the test record for a specific function, falling back to .cc files on disk."""
+    key = f"{rel_source_path}::{fn_name}:{fn_line}"
+    record = load_tests().get(key, {})
+
+    mmdb_content = record.get("mmdb_test", "")
+    gemmi_content = record.get("gemmi_test", "")
+
+    # Fallback: read directly from the .cc file if JSON entry is absent/empty
+    if not mmdb_content:
+        mmdb_path = get_test_file_path(rel_source_path, fn_name, "mmdb")
+        if mmdb_path.exists():
+            mmdb_content = mmdb_path.read_text(errors="replace")
+
+    if not gemmi_content:
+        gemmi_path = get_test_file_path(rel_source_path, fn_name, "gemmi")
+        if gemmi_path.exists():
+            gemmi_content = gemmi_path.read_text(errors="replace")
+
+    return {
+        "mmdb_test": mmdb_content,
+        "gemmi_test": gemmi_content,
+        "notes": record.get("notes", ""),
+        "status": record.get("status", "draft"),
+    }
+
+
+@app.post("/api/generate-test")
+async def generate_test(req: GenerateTestRequest):
+    symbols_list = ", ".join(req.mmdb_symbols) if req.mmdb_symbols else "none"
+
+    if req.target == "mmdb":
+        prompt = (
+            f"Write a Google Test (GTest) unit test for the following C++ function "
+            f"using MMDB2 types.\n\n"
+            f"Function: `{req.function_name}`\n"
+            f"MMDB symbols used: {symbols_list}\n"
+        )
+        if req.additional_instructions.strip():
+            prompt += f"Additional instructions: {req.additional_instructions.strip()}\n"
+        prompt += (
+            f"\n## Source code:\n```cpp\n{req.source_code}\n```\n\n"
+            "Write a focused GTest unit test that:\n"
+            "- Sets up minimal MMDB2 structures needed to call the function\n"
+            "- Calls the function with realistic inputs\n"
+            "- Asserts the expected outputs/side-effects\n"
+            "- Uses TEST() or TEST_F() macros\n\n"
+            "Output ONLY the test code inside a single ```cpp``` block."
+        )
+        system = STRATEGY_CONTEXT
+
+    elif req.target == "gemmi":
+        prompt = (
+            f"Write a Google Test (GTest) unit test for the following C++ function "
+            f"AFTER it has been refactored from MMDB2 to Gemmi.\n\n"
+            f"Function: `{req.function_name}`\n"
+            f"Original MMDB symbols: {symbols_list}\n"
+        )
+        if req.additional_instructions.strip():
+            prompt += f"Additional instructions: {req.additional_instructions.strip()}\n"
+        prompt += (
+            f"\n## Original MMDB source (to be refactored):\n```cpp\n{req.source_code}\n```\n\n"
+            "Write a GTest unit test for the Gemmi-refactored version that:\n"
+            "- Sets up gemmi::Structure / gemmi::Model / gemmi::Chain / gemmi::Residue / gemmi::Atom\n"
+            "- Tests the SAME logical behaviour as the MMDB version would\n"
+            "- Uses TEST() or TEST_F() macros\n\n"
+            "Output ONLY the test code inside a single ```cpp``` block."
+        )
+        system = STRATEGY_CONTEXT
+
+    else:  # both
+        prompt = (
+            f"Write TWO Google Test (GTest) unit tests for the following C++ function:\n"
+            f"1. An MMDB2 version (tests the current implementation)\n"
+            f"2. A Gemmi version (tests the future refactored implementation)\n\n"
+            f"Function: `{req.function_name}`\n"
+            f"MMDB symbols used: {symbols_list}\n"
+        )
+        if req.additional_instructions.strip():
+            prompt += f"Additional instructions: {req.additional_instructions.strip()}\n"
+        prompt += (
+            f"\n## Source code:\n```cpp\n{req.source_code}\n```\n\n"
+            "Both tests must verify the SAME logical behaviour with equivalent assertions, "
+            "but use each library's own types and APIs for setup.\n\n"
+            "Output EXACTLY this format — no other text:\n\n"
+            "=== MMDB TEST ===\n"
+            "```cpp\n"
+            "// MMDB2 version\n"
+            "TEST(FunctionNameTests, MMDB_Behaviour) {\n"
+            "  // ...\n"
+            "}\n"
+            "```\n\n"
+            "=== GEMMI TEST ===\n"
+            "```cpp\n"
+            "// Gemmi version\n"
+            "TEST(FunctionNameTests, Gemmi_Behaviour) {\n"
+            "  // ...\n"
+            "}\n"
+            "```"
+        )
+        system = STRATEGY_CONTEXT
+
+    payload = {
+        "model": req.model,
+        "system": system,
+        "prompt": prompt,
+        "stream": True,
+    }
+
+    async def stream_ollama():
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream("POST", OLLAMA_URL, json=payload) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    yield f"Error from Ollama ({response.status_code}): {body.decode()}"
+                    return
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            chunk = data.get("response", "")
+                            if chunk:
+                                yield chunk
+                        except json.JSONDecodeError:
+                            pass
+
+    return StreamingResponse(stream_ollama(), media_type="text/plain")  # /api/generate-test
+
+
+# ── Test file write / compile / run endpoints ─────────────────────────────────
+
+@app.get("/api/tests/file-paths")
+def get_test_file_paths(rel_source_path: str = Query(...), fn_name: str = Query(...)):
+    """Return where MMDB and Gemmi test files would be written."""
+    mmdb_path = get_test_file_path(rel_source_path, fn_name, "mmdb")
+    gemmi_path = get_test_file_path(rel_source_path, fn_name, "gemmi")
+    return {
+        "mmdb": str(mmdb_path.relative_to(_coot_root)),
+        "gemmi": str(gemmi_path.relative_to(_coot_root)),
+        "mmdb_exists": mmdb_path.exists(),
+        "gemmi_exists": gemmi_path.exists(),
+    }
+
+
+@app.post("/api/tests/write")
+def write_test_files(req: WriteTestRequest):
+    """Write MMDB and/or Gemmi test .cc files to disk."""
+    written: dict[str, str] = {}
+    for variant, content in [("mmdb", req.mmdb_test), ("gemmi", req.gemmi_test)]:
+        if not content.strip():
+            continue
+        path = get_test_file_path(req.rel_source_path, req.fn_name, variant)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(wrap_test_content(content, variant, req.fn_name))
+        written[variant] = str(path.relative_to(_coot_root))
+    return {"ok": True, "written": written}
+
+
+@app.post("/api/tests/compile-run")
+async def compile_and_run(req: CompileRunRequest):
+    """Write the test file, compile it, run it, stream all output."""
+    test_file = get_test_file_path(req.rel_source_path, req.fn_name, req.variant)
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(wrap_test_content(req.test_code, req.variant, req.fn_name))
+
+    rel_path = test_file.relative_to(_coot_root)
+    bin_dir = test_file.parent / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    output_bin = bin_dir / test_file.stem
+
+    coot_api_dir = "/Users/dialpuri/lmb/build-coot-and-deps/"
+    coot_api_name = "cootapi"
+
+    mmdb_api_dir = "/opt/homebrew/Cellar/mmdb2/2.0.22/lib"
+    mmdb_api_name = "mmdb2"
+
+
+    compile_cmd = (
+        f'{_args.cxx} -std=c++17 "{test_file}" -o "{output_bin}" '
+        f'{_gtest_flags} -I"{_coot_root}" -pthread -Wl,-rpath,{coot_api_dir} -L {coot_api_dir} -L {mmdb_api_dir} -l{coot_api_name} -l {mmdb_api_name}'
+    )
+    if _args.cxx_flags:
+        compile_cmd += f" {_args.cxx_flags}"
+
+    async def stream_output():
+        yield f"[WRITE]   {rel_path}\n"
+        yield f"[COMPILE] {compile_cmd}\n\n"
+        yield f"[WORKING_DIR] {str(_coot_root)}\n\n"
+
+        proc = await asyncio.create_subprocess_shell(
+            compile_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(_coot_root),
+        )
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            yield raw.decode(errors="replace")
+        await proc.wait()
+
+        if proc.returncode != 0:
+            yield f"\n[COMPILE FAILED]  exit code {proc.returncode}\n"
+            return
+
+        yield f"\n[COMPILE OK]\n[RUN]     {output_bin.relative_to(_coot_root)}\n\n"
+
+        run_proc = await asyncio.create_subprocess_exec(
+            str(output_bin),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert run_proc.stdout is not None
+        async for raw in run_proc.stdout:
+            yield raw.decode(errors="replace")
+        await run_proc.wait()
+
+        code = run_proc.returncode
+        yield f"\n{'[PASSED]' if code == 0 else f'[FAILED]  exit code {code}'}\n"
+
+    return StreamingResponse(stream_output(), media_type="text/plain")
