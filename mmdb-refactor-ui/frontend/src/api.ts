@@ -101,6 +101,49 @@ export async function writeTestFiles(
   return res.data
 }
 
+// ── Batch generation ──────────────────────────────────────────────────────────
+
+export type BatchEvent =
+  | { type: 'start'; total: number }
+  | { type: 'progress'; key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number }
+  | { type: 'skip';     key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number }
+  | { type: 'done';     key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number; has_mmdb: boolean; has_gemmi: boolean }
+  | { type: 'error';    key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number; message: string }
+  | { type: 'finish';   done: number; skipped: number; errors: number; total: number }
+
+export async function* generateAllTests(
+  model: string,
+  skipExisting: boolean,
+  additionalInstructions: string,
+  signal?: AbortSignal,
+): AsyncGenerator<BatchEvent> {
+  const response = await fetch(`${BASE}/tests/generate-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, skip_existing: skipExisting, additional_instructions: additionalInstructions }),
+    signal,
+  })
+  if (!response.ok) throw new Error(`Server error: ${response.status}`)
+  if (!response.body) throw new Error('No response body')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line.trim()) {
+        try { yield JSON.parse(line) as BatchEvent } catch { /* skip malformed */ }
+      }
+    }
+  }
+}
+
 export async function gitCommitTestFiles(
   rel_source_path: string,
   fn_name: string,

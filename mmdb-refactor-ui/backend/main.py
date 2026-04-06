@@ -209,6 +209,12 @@ class GitCommitRequest(BaseModel):
     commit_message: str
 
 
+class GenerateAllRequest(BaseModel):
+    model: str = "llama3.2"
+    skip_existing: bool = True
+    additional_instructions: str = ""
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def load_progress() -> dict:
     if PROGRESS_PATH.exists():
@@ -729,3 +735,161 @@ async def git_commit_test(req: GitCommitRequest):
             yield "\n[COMMITTED]\n"
 
     return StreamingResponse(stream_output(), media_type="text/plain")  # git-commit
+
+
+# ── Batch test generation helpers ─────────────────────────────────────────────
+
+def _parse_both_sections_py(raw: str) -> tuple[str, str]:
+    mmdb_marker = "=== MMDB TEST ==="
+    gemmi_marker = "=== GEMMI TEST ==="
+    mi, gi = raw.find(mmdb_marker), raw.find(gemmi_marker)
+    if mi == -1 and gi == -1:
+        return raw, ""
+    if mi != -1 and gi == -1:
+        return raw[mi + len(mmdb_marker):].strip(), ""
+    if mi == -1:
+        return "", raw[gi + len(gemmi_marker):].strip()
+    return raw[mi + len(mmdb_marker):gi].strip(), raw[gi + len(gemmi_marker):].strip()
+
+
+def _strip_fences_py(code: str) -> str:
+    m = re.match(r'^```(?:cpp)?\s*\n([\s\S]*?)```\s*$', code.strip())
+    return m.group(1) if m else code
+
+
+def _build_both_prompt(fn_name: str, source: str, symbols: list[str], extra: str) -> str:
+    symbols_list = ", ".join(symbols) if symbols else "none"
+    prompt = (
+        f"Write TWO Google Test (GTest) unit tests for the following C++ function:\n"
+        f"1. An MMDB2 version (tests the current implementation)\n"
+        f"2. A Gemmi version (tests the future refactored implementation)\n\n"
+        f"Function: `{fn_name}`\n"
+        f"MMDB symbols used: {symbols_list}\n"
+    )
+    if extra.strip():
+        prompt += f"Additional instructions: {extra.strip()}\n"
+    prompt += (
+        f"\n## Source code:\n```cpp\n{source}\n```\n\n"
+        "Both tests must verify the SAME logical behaviour with equivalent assertions, "
+        "but use each library's own types and APIs for setup.\n\n"
+        "Output EXACTLY this format — no other text:\n\n"
+        "=== MMDB TEST ===\n"
+        "```cpp\n"
+        "// MMDB2 version\n"
+        "TEST(FunctionNameTests, MMDB_Behaviour) {\n"
+        "  // ...\n"
+        "}\n"
+        "```\n\n"
+        "=== GEMMI TEST ===\n"
+        "```cpp\n"
+        "// Gemmi version\n"
+        "TEST(FunctionNameTests, Gemmi_Behaviour) {\n"
+        "  // ...\n"
+        "}\n"
+        "```"
+    )
+    return prompt
+
+
+async def _call_ollama(model: str, prompt: str) -> str:
+    """Non-streaming Ollama call — waits for full response."""
+    payload = {"model": model, "system": STRATEGY_CONTEXT, "prompt": prompt, "stream": False}
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        resp = await client.post(OLLAMA_URL, json=payload)
+        resp.raise_for_status()
+        return resp.json().get("response", "")
+
+
+@app.post("/api/tests/generate-all")
+async def generate_all_tests(req: GenerateAllRequest):
+    """
+    Iterate every function in every file and generate both MMDB and Gemmi tests.
+    Streams NDJSON progress lines: {"type": "start"|"progress"|"skip"|"done"|"error"|"finish", ...}
+    """
+    async def stream_progress():
+        tests = load_tests()
+
+        # Collect all (rel_path, fn_dict) pairs
+        work = [
+            (entry["rel_path"], fn)
+            for entry in _files
+            for fn in entry.get("functions", [])
+        ]
+        total = len(work)
+        yield json.dumps({"type": "start", "total": total}) + "\n"
+
+        done = skipped = errors = 0
+
+        for rel_path, fn in work:
+            fn_name: str = fn["name"]
+            fn_line: int = fn["line"]
+            fn_end: int = fn["end_line"]
+            key = f"{rel_path}::{fn_name}:{fn_line}"
+
+            # Skip if both variants already exist
+            if req.skip_existing:
+                rec = tests.get(key, {})
+                if rec.get("mmdb_test") and rec.get("gemmi_test"):
+                    skipped += 1
+                    yield json.dumps({
+                        "type": "skip", "key": key, "fn": fn_name, "file": rel_path,
+                        "done": done, "skipped": skipped, "errors": errors, "total": total,
+                    }) + "\n"
+                    continue
+
+            yield json.dumps({
+                "type": "progress", "key": key, "fn": fn_name, "file": rel_path,
+                "done": done, "skipped": skipped, "errors": errors, "total": total,
+            }) + "\n"
+
+            try:
+                # Load source lines
+                full_path = os.path.join(_coot_root, rel_path)
+                with open(full_path, "r", errors="replace") as f:
+                    all_lines = f.readlines()
+                source = "".join(all_lines[max(0, fn_line - 1):min(len(all_lines), fn_end)])
+
+                # Call Ollama
+                prompt = _build_both_prompt(fn_name, source, fn.get("mmdb_symbols", []), req.additional_instructions)
+                raw = await _call_ollama(req.model, prompt)
+
+                mmdb_raw, gemmi_raw = _parse_both_sections_py(raw)
+                mmdb_text = _strip_fences_py(mmdb_raw)
+                gemmi_text = _strip_fences_py(gemmi_raw)
+
+                # Write .cc files
+                for variant, text in [("mmdb", mmdb_text), ("gemmi", gemmi_text)]:
+                    if text.strip():
+                        path = get_test_file_path(rel_path, fn_name, variant)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(wrap_test_content(text, variant, fn_name))
+
+                # Persist to tests.json
+                rec = tests.get(key, {"notes": "", "status": "draft"})
+                if mmdb_text.strip():
+                    rec["mmdb_test"] = mmdb_text
+                if gemmi_text.strip():
+                    rec["gemmi_test"] = gemmi_text
+                tests[key] = rec
+                save_tests(tests)
+
+                done += 1
+                yield json.dumps({
+                    "type": "done", "key": key, "fn": fn_name, "file": rel_path,
+                    "done": done, "skipped": skipped, "errors": errors, "total": total,
+                    "has_mmdb": bool(mmdb_text.strip()), "has_gemmi": bool(gemmi_text.strip()),
+                }) + "\n"
+
+            except Exception as ex:
+                errors += 1
+                yield json.dumps({
+                    "type": "error", "key": key, "fn": fn_name, "file": rel_path,
+                    "done": done, "skipped": skipped, "errors": errors, "total": total,
+                    "message": str(ex),
+                }) + "\n"
+
+        yield json.dumps({
+            "type": "finish", "done": done, "skipped": skipped, "errors": errors, "total": total,
+        }) + "\n"
+
+    return StreamingResponse(stream_progress(), media_type="application/x-ndjson")

@@ -2,11 +2,13 @@ import { useState, useEffect, useCallback } from 'react'
 import type { FileDetail, FunctionRecord, ProgressMap, Stats, TestsMap, AppMode } from './types'
 import { fetchStats, fetchProgress, fetchTests, fetchFile } from './api'
 import { useHorizontalResize } from './hooks/useResize'
+import { useBatch } from './hooks/useBatch'
 import StatsBar from './components/StatsBar'
 import Sidebar from './components/Sidebar'
 import FunctionList from './components/FunctionList'
 import RefactorPanel from './components/RefactorPanel'
 import TestPanel from './components/TestPanel'
+import BatchGenPanel from './components/BatchGenPanel'
 
 const SK = 'mmdb-refactor'
 
@@ -27,6 +29,7 @@ export default function App() {
   const [progress, setProgress] = useState<ProgressMap>({})
   const [tests, setTests] = useState<TestsMap>({})
   const [restoring, setRestoring] = useState(true)
+  const [batchOpen, setBatchOpen] = useState(false)
 
   const loadStats = useCallback(async () => {
     try { setStats(await fetchStats()) } catch (e) { console.error(e) }
@@ -39,6 +42,8 @@ export default function App() {
   const loadTests = useCallback(async () => {
     try { setTests(await fetchTests()) } catch (e) { console.error(e) }
   }, [])
+
+  const batch = useBatch(loadTests)
 
   useEffect(() => {
     const savedPath = lsGet('selected-file')
@@ -101,6 +106,21 @@ export default function App() {
           count={testsTotal > 0 ? `${testsDone}/${testsTotal}` : undefined}
         />
 
+        {mode === 'tests' && (
+          <button
+            onClick={() => setBatchOpen(b => !b)}
+            className={`ml-4 btn btn-sm ${batchOpen ? 'btn-primary' : 'btn-secondary'}`}
+          >
+            {batchOpen ? 'Hide batch' : 'Run All'}
+            {batch.state.phase === 'running' && !batchOpen && (
+              <span className="ml-1.5 flex items-center gap-1 text-blue-400">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                {batch.state.done + batch.state.skipped + batch.state.errors}/{batch.state.total}
+              </span>
+            )}
+          </button>
+        )}
+
         {mode === 'tests' && testsTotal > 0 && (
           <div className="flex items-center gap-2 ml-auto mr-2 text-xs text-zinc-500">
             <div className="w-24 h-1 bg-zinc-800 rounded-full overflow-hidden">
@@ -148,7 +168,17 @@ export default function App() {
 
         {/* Main panel */}
         <div className="flex-1 overflow-hidden flex flex-col min-w-0">
-          {mode === 'refactor' ? (
+          {mode === 'tests' && batchOpen ? (
+            <BatchGenPanel
+              state={batch.state}
+              config={batch.config}
+              onConfigChange={batch.setConfig}
+              onStart={batch.start}
+              onStop={batch.stop}
+              onReset={batch.reset}
+              onClose={() => setBatchOpen(false)}
+            />
+          ) : mode === 'refactor' ? (
             <RefactorPanel file={selectedFile} fn={selectedFunction} onProgressUpdate={loadProgress} stats={stats} />
           ) : (
             <TestPanel file={selectedFile} fn={selectedFunction} onTestsUpdate={loadTests} />
