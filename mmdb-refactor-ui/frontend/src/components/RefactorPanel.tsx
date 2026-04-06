@@ -20,13 +20,8 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  // Load source code when function changes
   useEffect(() => {
-    if (!file || !fn) {
-      setSourceCode('')
-      setGemmiCode('')
-      return
-    }
+    if (!file || !fn) { setSourceCode(''); setGemmiCode(''); return }
     setSourceLoading(true)
     setError(null)
     fetchSource(file.rel_path, fn.line, fn.end_line)
@@ -37,15 +32,10 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
 
   const startRefactor = async (clear: boolean) => {
     if (!file || !fn) return
-    if (streaming) {
-      abortRef.current?.abort()
-      return
-    }
+    if (streaming) { abortRef.current?.abort(); return }
     if (clear) setGemmiCode('')
-
     setStreaming(true)
     setError(null)
-
     abortRef.current = new AbortController()
 
     try {
@@ -62,79 +52,52 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
         signal: abortRef.current.signal,
       })
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`)
-      }
-
-      if (!response.body) {
-        throw new Error('No response body')
-      }
+      if (!response.ok) throw new Error(`Server error: ${response.status}`)
+      if (!response.body) throw new Error('No response body')
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-
       let accumulated = clear ? '' : gemmiCode
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const chunk = decoder.decode(value, { stream: true })
-        accumulated += chunk
+        accumulated += decoder.decode(value, { stream: true })
         setGemmiCode(accumulated)
       }
     } catch (e: unknown) {
-      if (e instanceof Error && e.name === 'AbortError') {
-        // User cancelled
-      } else {
-        setError(String(e))
-      }
+      if (!(e instanceof Error && e.name === 'AbortError')) setError(String(e))
     } finally {
       setStreaming(false)
     }
   }
 
-  const copyGemmiCode = () => {
-    navigator.clipboard.writeText(gemmiCode).catch(console.error)
-  }
-
   const markProgress = async (status: 'done' | 'skipped' | 'in_progress') => {
     if (!file || !fn) return
-    const key = `${file.rel_path}::${fn.name}`
-    await postProgress(key, status)
+    await postProgress(`${file.rel_path}::${fn.name}`, status)
     onProgressUpdate()
   }
 
   const clearProgress = async () => {
     if (!file || !fn) return
-    const key = `${file.rel_path}::${fn.name}`
-    await postProgress(key, 'todo')
+    await postProgress(`${file.rel_path}::${fn.name}`, 'todo')
     onProgressUpdate()
   }
 
-  // ── Empty states ───────────────────────────────────────────────────────────
+  // ── Empty states ──────────────────────────────────────────────────────────
 
   if (!file) {
     return (
       <div className="flex flex-col h-full items-center justify-center px-8 text-center">
-        <div className="text-4xl mb-4">⚡</div>
-        <h2 className="text-xl font-semibold text-gray-300 mb-2">MMDB → Gemmi Refactor Manager</h2>
-        <p className="text-gray-500 text-sm mb-6 max-w-md">
-          Browse files in the sidebar, select a file to see its functions, then pick a function to generate a Gemmi refactor using a local LLM.
+        <h2 className="text-base font-semibold text-zinc-300 mb-2">MMDB → Gemmi Refactor</h2>
+        <p className="text-zinc-600 text-sm mb-6 max-w-sm">
+          Select a file and function to generate a Gemmi equivalent using a local LLM.
         </p>
         {stats && (
-          <div className="flex gap-6 text-sm">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-blue-400">{stats.total_files_scanned.toLocaleString()}</div>
-              <div className="text-gray-500">files scanned</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-orange-400">{stats.files_with_mmdb_refs.toLocaleString()}</div>
-              <div className="text-gray-500">with MMDB refs</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-red-400">{stats.total_mmdb_refs.toLocaleString()}</div>
-              <div className="text-gray-500">total refs</div>
-            </div>
+          <div className="flex gap-6 text-sm text-zinc-500">
+            <span><span className="text-zinc-300 font-mono">{stats.total_files_scanned.toLocaleString()}</span> files</span>
+            <span><span className="text-zinc-300 font-mono">{stats.files_with_mmdb_refs.toLocaleString()}</span> with refs</span>
+            <span><span className="text-zinc-300 font-mono">{stats.total_mmdb_refs.toLocaleString()}</span> total refs</span>
           </div>
         )}
       </div>
@@ -144,53 +107,34 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
   if (!fn) {
     return (
       <div className="flex flex-col h-full items-center justify-center px-8 text-center">
-        <div className="text-3xl mb-3">📄</div>
-        <h2 className="text-lg font-semibold text-gray-300 mb-1">{file.rel_path.split('/').pop()}</h2>
-        <p className="text-gray-500 text-sm mb-4">{file.rel_path}</p>
-        <p className="text-gray-600 text-sm">Select a function from the middle panel to begin refactoring</p>
-        <div className="mt-4 text-xs text-gray-600">
-          {file.functions.length} function{file.functions.length !== 1 ? 's' : ''} · {file.total_mmdb_refs} MMDB refs
-        </div>
+        <h2 className="text-sm font-mono font-semibold text-zinc-300 mb-1">{file.rel_path.split('/').pop()}</h2>
+        <p className="text-zinc-600 text-xs mb-3">{file.rel_path}</p>
+        <p className="text-zinc-600 text-sm">Select a function to begin refactoring</p>
         {file.mmdb_includes.length > 0 && (
-          <div className="mt-4 max-w-md text-left">
-            <div className="text-xs text-gray-500 mb-1">MMDB includes:</div>
-            {file.mmdb_includes.map(inc => (
-              <div key={inc} className="text-xs font-mono text-gray-400">{inc}</div>
-            ))}
+          <div className="mt-4 text-xs text-zinc-600 font-mono">
+            {file.mmdb_includes.map(inc => <div key={inc}>{inc}</div>)}
           </div>
         )}
       </div>
     )
   }
 
-  // ── Main view ──────────────────────────────────────────────────────────────
-
-  const highlightedSource = sourceCode
-    ? highlightCppWithLines(sourceCode, fn.line, fn.mmdb_symbols)
-    : ''
+  const highlightedSource = sourceCode ? highlightCppWithLines(sourceCode, fn.line, fn.mmdb_symbols) : ''
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden bg-zinc-950">
       {/* Function header */}
-      <div className="px-4 py-3 bg-gray-800 border-b border-gray-700 flex-shrink-0">
-        <div className="flex items-start gap-3">
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-mono font-semibold text-gray-100 truncate" title={fn.name}>
-              {fn.name}
-            </h3>
-            <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
-              <span>{file.rel_path}</span>
-              <span>L{fn.line}–{fn.end_line}</span>
-              <span>{fn.mmdb_ref_count} MMDB refs</span>
-            </div>
-          </div>
+      <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
+        <h3 className="text-sm font-mono font-medium text-zinc-100 truncate" title={fn.name}>{fn.name}</h3>
+        <div className="flex items-center gap-3 mt-0.5 text-xs text-zinc-600">
+          <span>{file.rel_path}</span>
+          <span>L{fn.line}–{fn.end_line}</span>
+          <span>{fn.mmdb_ref_count} refs</span>
         </div>
         {fn.mmdb_symbols.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
+          <div className="flex flex-wrap gap-2 mt-2">
             {fn.mmdb_symbols.map(sym => (
-              <span key={sym} className="text-xs px-1.5 py-0.5 rounded bg-yellow-900/50 text-yellow-400 border border-yellow-800/50 font-mono">
-                {sym}
-              </span>
+              <span key={sym} className="text-xs font-mono text-amber-500/80">{sym}</span>
             ))}
           </div>
         )}
@@ -198,43 +142,40 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
 
       {/* Code panels */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Before panel */}
-        <div className="flex-1 flex flex-col border-r border-gray-700 overflow-hidden">
-          <div className="px-3 py-1.5 bg-gray-800/50 border-b border-gray-700 flex-shrink-0">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Before (MMDB)</span>
+        {/* Before */}
+        <div className="flex-1 flex flex-col border-r border-zinc-800 overflow-hidden">
+          <div className="px-3 py-1.5 bg-zinc-900/60 border-b border-zinc-800 flex-shrink-0">
+            <span className="text-xs text-zinc-500">Before — MMDB</span>
           </div>
           <div className="flex-1 overflow-auto">
             {sourceLoading ? (
-              <div className="p-4 text-xs text-gray-500">Loading source…</div>
+              <div className="p-4 text-xs text-zinc-600">Loading…</div>
             ) : sourceCode ? (
               <pre
                 className="language-cpp p-3 text-xs leading-5 bg-[#0d1117] min-h-full whitespace-pre"
                 dangerouslySetInnerHTML={{ __html: highlightedSource }}
               />
             ) : (
-              <div className="p-4 text-xs text-gray-500">Source not available</div>
+              <div className="p-4 text-xs text-zinc-600">Source not available</div>
             )}
           </div>
         </div>
 
-        {/* After panel */}
+        {/* After */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="px-3 py-1.5 bg-gray-800/50 border-b border-gray-700 flex-shrink-0">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">After (Gemmi)</span>
-            {streaming && (
-              <span className="ml-2 text-xs text-blue-400 animate-pulse">Generating…</span>
-            )}
+          <div className="px-3 py-1.5 bg-zinc-900/60 border-b border-zinc-800 flex-shrink-0 flex items-center gap-2">
+            <span className="text-xs text-zinc-500">After — Gemmi</span>
+            {streaming && <span className="text-xs text-blue-400 animate-pulse">Generating…</span>}
           </div>
           <div className="flex-1 overflow-auto">
             {gemmiCode ? (
-              <pre className="p-3 text-xs font-mono leading-5 text-blue-300 bg-gray-950 min-h-full whitespace-pre">
+              <pre className="p-3 text-xs font-mono leading-5 text-blue-300/80 bg-zinc-950 min-h-full whitespace-pre">
                 {gemmiCode}
                 {streaming && <span className="animate-pulse text-blue-400">▋</span>}
               </pre>
             ) : (
-              <div className="flex flex-col items-center justify-center h-full text-gray-600 text-sm">
-                <div className="text-2xl mb-2">→</div>
-                <p>Click &lsquo;Generate&rsquo; to get Gemmi equivalent</p>
+              <div className="flex items-center justify-center h-full text-zinc-600 text-xs">
+                Click Generate to produce a Gemmi equivalent
               </div>
             )}
           </div>
@@ -242,31 +183,29 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
       </div>
 
       {/* Controls */}
-      <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800 p-4">
+      <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-900 p-4">
         {error && (
-          <div className="mb-3 px-3 py-2 bg-red-900/30 border border-red-700/50 rounded text-xs text-red-400">
-            {error}
-          </div>
+          <div className="mb-3 px-3 py-2 bg-red-950/50 border border-red-900/50 rounded text-xs text-red-400">{error}</div>
         )}
 
         <div className="flex gap-3 mb-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-gray-400">Ollama model</label>
+            <label className="text-xs text-zinc-500">Model</label>
             <input
               type="text"
               value={model}
               onChange={e => setModel(e.target.value)}
-              className="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500 w-40"
+              className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-blue-500 w-36"
             />
           </div>
           <div className="flex flex-col gap-1 flex-1">
-            <label className="text-xs text-gray-400">Additional instructions (optional)</label>
+            <label className="text-xs text-zinc-500">Additional instructions</label>
             <textarea
               value={additionalInstructions}
               onChange={e => setAdditionalInstructions(e.target.value)}
               placeholder="e.g. use const references, preserve existing comments…"
               rows={2}
-              className="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
+              className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-500 resize-none"
             />
           </div>
         </div>
@@ -275,45 +214,32 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
           <button
             onClick={() => startRefactor(true)}
             disabled={!sourceCode}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors"
+            className="btn btn-primary"
           >
             {streaming ? 'Stop' : 'Generate'}
           </button>
           <button
             onClick={() => startRefactor(false)}
             disabled={!sourceCode || streaming}
-            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors"
+            className="btn btn-secondary"
           >
-            Regenerate
+            Append
           </button>
           <button
-            onClick={copyGemmiCode}
+            onClick={() => navigator.clipboard.writeText(gemmiCode).catch(console.error)}
             disabled={!gemmiCode}
-            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors"
+            className="btn btn-secondary"
           >
             Copy
           </button>
           <div className="flex-1" />
-          <button
-            onClick={() => markProgress('done')}
-            disabled={!file || !fn}
-            className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors"
-          >
-            ✓ Done
+          <button onClick={() => markProgress('done')} disabled={!file || !fn} className="btn btn-secondary text-emerald-400 hover:text-emerald-300">
+            Done
           </button>
-          <button
-            onClick={() => markProgress('skipped')}
-            disabled={!file || !fn}
-            className="px-4 py-2 bg-yellow-700 hover:bg-yellow-600 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors"
-          >
-            → Skip
+          <button onClick={() => markProgress('skipped')} disabled={!file || !fn} className="btn btn-secondary">
+            Skip
           </button>
-          <button
-            onClick={clearProgress}
-            disabled={!file || !fn}
-            className="px-3 py-2 bg-red-900 hover:bg-red-800 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm font-medium transition-colors text-red-300"
-            title="Clear status"
-          >
+          <button onClick={clearProgress} disabled={!file || !fn} className="btn btn-ghost btn-sm text-zinc-600 hover:text-zinc-400" title="Clear status">
             ×
           </button>
         </div>

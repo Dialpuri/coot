@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Prism.js "One Dark" theme (custom, matches the app palette) ──────────── */
+/* ── Prism.js One Dark ────────────────────────────────────────────────────── */
 code[class*="language-"],
 pre[class*="language-"] {
   color: #abb2bf;
@@ -48,16 +48,16 @@ pre[class*="language-"] {
 .token.bold           { font-weight: bold; }
 .token.italic         { font-style: italic; }
 
-/* MMDB symbol highlight inside Prism-highlighted code */
+/* MMDB symbol highlight */
 mark.mmdb-symbol {
-  background-color: rgba(251, 191, 36, 0.25);
+  background-color: rgba(251, 191, 36, 0.2);
   color: #fbbf24;
   border-radius: 2px;
   padding: 0 1px;
   font-style: normal;
 }
 
-/* react-simple-code-editor container */
+/* react-simple-code-editor */
 .rsce-container {
   background: #0d1117 !important;
   min-height: 100%;
@@ -70,9 +70,7 @@ mark.mmdb-symbol {
   caret-color: #abb2bf;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -80,26 +78,30 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-/* Custom scrollbar for dark theme */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #1f2937;
-}
-::-webkit-scrollbar-thumb {
-  background: #4b5563;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
-}
+/* Scrollbars */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #3f3f46; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #52525b; }
 
-/* Highlighted mmdb symbols in code blocks */
-mark.mmdb-symbol {
-  background-color: rgba(251, 191, 36, 0.3);
-  color: #fbbf24;
-  border-radius: 2px;
-  padding: 0 1px;
+/* ── Button utilities ─────────────────────────────────────────────────────── */
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap;
+  }
+  .btn-primary {
+    @apply bg-blue-600 text-white hover:bg-blue-500;
+  }
+  .btn-secondary {
+    @apply bg-zinc-700 text-zinc-200 border border-zinc-600 hover:bg-zinc-600;
+  }
+  .btn-ghost {
+    @apply text-zinc-400 hover:text-zinc-100;
+  }
+  .btn-danger {
+    @apply text-red-400 hover:text-red-300;
+  }
+  .btn-sm {
+    @apply px-2 py-1 text-xs;
+  }
 }

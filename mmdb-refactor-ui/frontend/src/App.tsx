@@ -8,7 +8,7 @@ import FunctionList from './components/FunctionList'
 import RefactorPanel from './components/RefactorPanel'
 import TestPanel from './components/TestPanel'
 
-const SK = 'mmdb-refactor' // localStorage key prefix
+const SK = 'mmdb-refactor'
 
 function lsGet(key: string) {
   try { return localStorage.getItem(`${SK}:${key}`) } catch { return null }
@@ -20,8 +20,8 @@ function lsSet(key: string, val: string) {
 export default function App() {
   const [mode, setMode] = useState<AppMode>(() => (lsGet('mode') as AppMode) ?? 'refactor')
   const [stats, setStats] = useState<Stats | null>(null)
-  const [sidebarWidth, startSidebarDrag] = useHorizontalResize(288, 150, 500, `${SK}:sidebar-width`)
-  const [fnListWidth, startFnListDrag] = useHorizontalResize(384, 180, 600, `${SK}:fnlist-width`)
+  const [sidebarWidth, startSidebarDrag] = useHorizontalResize(272, 150, 480, `${SK}:sidebar-width`)
+  const [fnListWidth, startFnListDrag] = useHorizontalResize(360, 180, 560, `${SK}:fnlist-width`)
   const [selectedFile, setSelectedFile] = useState<FileDetail | null>(null)
   const [selectedFunction, setSelectedFunction] = useState<FunctionRecord | null>(null)
   const [progress, setProgress] = useState<ProgressMap>({})
@@ -40,13 +40,10 @@ export default function App() {
     try { setTests(await fetchTests()) } catch (e) { console.error(e) }
   }, [])
 
-  // ── Restore selection from localStorage on mount ──────────────────────────
   useEffect(() => {
     const savedPath = lsGet('selected-file')
     const savedFnJson = lsGet('selected-fn')
-
     if (!savedPath) { setRestoring(false); return }
-
     fetchFile(savedPath)
       .then(file => {
         setSelectedFile(file)
@@ -55,12 +52,12 @@ export default function App() {
             const { name, line } = JSON.parse(savedFnJson) as { name: string; line: number }
             const fn = file.functions.find(f => f.name === name && f.line === line)
             if (fn) setSelectedFunction(fn)
-          } catch { /* ignore malformed json */ }
+          } catch { /* ignore */ }
         }
       })
-      .catch(() => { /* file may no longer be in report */ })
+      .catch(() => {})
       .finally(() => setRestoring(false))
-  }, []) // intentionally empty — runs once on mount
+  }, [])
 
   useEffect(() => {
     loadStats()
@@ -68,105 +65,72 @@ export default function App() {
     loadTests()
   }, [loadStats, loadProgress, loadTests])
 
-  // ── Persist selection changes ──────────────────────────────────────────────
+  useEffect(() => { if (!restoring) lsSet('mode', mode) }, [mode, restoring])
+  useEffect(() => { if (!restoring && selectedFile) lsSet('selected-file', selectedFile.rel_path) }, [selectedFile, restoring])
   useEffect(() => {
-    if (!restoring) lsSet('mode', mode)
-  }, [mode, restoring])
-
-  useEffect(() => {
-    if (!restoring && selectedFile) lsSet('selected-file', selectedFile.rel_path)
-  }, [selectedFile, restoring])
-
-  useEffect(() => {
-    if (!restoring && selectedFunction) {
+    if (!restoring && selectedFunction)
       lsSet('selected-fn', JSON.stringify({ name: selectedFunction.name, line: selectedFunction.line }))
-    }
   }, [selectedFunction, restoring])
 
   const handleSelectFile = (file: FileDetail) => {
     setSelectedFile(file)
     setSelectedFunction(null)
-    lsSet('selected-fn', '') // clear stale fn when file changes
+    lsSet('selected-fn', '')
   }
 
-  // Summary counts for the mode tab badges
   const testsDone = Object.values(tests).filter(t => t.status === 'done').length
   const testsTotal = Object.keys(tests).length
   const refactorDone = Object.values(progress).filter(s => s === 'done').length
 
   return (
-    <div className="flex flex-col h-screen bg-gray-900 text-gray-100 overflow-hidden">
+    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
       <StatsBar stats={stats} />
 
-      {/* Mode tab bar */}
-      <div className="flex items-center gap-0 px-4 bg-gray-850 border-b border-gray-700 flex-shrink-0" style={{ background: '#161b22' }}>
-        <button
+      {/* Tab bar */}
+      <div className="flex items-center px-2 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
+        <Tab
+          active={mode === 'refactor'}
           onClick={() => setMode('refactor')}
-          className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            mode === 'refactor'
-              ? 'border-blue-500 text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-300'
-          }`}
-        >
-          Refactor
-          {refactorDone > 0 && (
-            <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full bg-blue-900/60 text-blue-300">
-              {refactorDone}
-            </span>
-          )}
-        </button>
-        <button
+          label="Refactor"
+          count={refactorDone > 0 ? `${refactorDone} done` : undefined}
+        />
+        <Tab
+          active={mode === 'tests'}
           onClick={() => setMode('tests')}
-          className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            mode === 'tests'
-              ? 'border-green-500 text-green-400'
-              : 'border-transparent text-gray-500 hover:text-gray-300'
-          }`}
-        >
-          Tests
-          {testsTotal > 0 && (
-            <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full bg-green-900/60 text-green-300">
-              {testsDone}/{testsTotal}
-            </span>
-          )}
-        </button>
+          label="Tests"
+          count={testsTotal > 0 ? `${testsDone}/${testsTotal}` : undefined}
+        />
 
-        {/* Test progress bar */}
         {mode === 'tests' && testsTotal > 0 && (
-          <div className="flex items-center gap-2 ml-auto text-xs text-gray-500">
-            <span>{testsDone} done · {testsTotal - testsDone} remaining</span>
-            <div className="w-32 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+          <div className="flex items-center gap-2 ml-auto mr-2 text-xs text-zinc-500">
+            <div className="w-24 h-1 bg-zinc-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-green-600 rounded-full transition-all"
+                className="h-full bg-blue-600 rounded-full transition-all"
                 style={{ width: `${(testsDone / testsTotal) * 100}%` }}
               />
             </div>
+            <span>{testsTotal - testsDone} remaining</span>
           </div>
         )}
 
-        {restoring && (
-          <span className="ml-auto text-xs text-gray-600 animate-pulse">Restoring session…</span>
+        {restoring && !mode && (
+          <span className="ml-auto text-xs text-zinc-600 mr-2">Restoring…</span>
         )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left column: File browser */}
-        <div className="flex-shrink-0 overflow-hidden flex flex-col" style={{ width: sidebarWidth }}>
-          <Sidebar
-            onSelectFile={handleSelectFile}
-            selectedPath={selectedFile?.rel_path ?? null}
-          />
+        {/* Sidebar */}
+        <div className="flex-shrink-0 overflow-hidden flex flex-col border-r border-zinc-800" style={{ width: sidebarWidth }}>
+          <Sidebar onSelectFile={handleSelectFile} selectedPath={selectedFile?.rel_path ?? null} />
         </div>
 
-        {/* Sidebar resize handle */}
         <div
           onMouseDown={startSidebarDrag}
-          className="w-1.5 flex-shrink-0 bg-gray-700 hover:bg-blue-500 active:bg-blue-400 cursor-ew-resize transition-colors select-none z-10"
-          title="Drag to resize"
+          className="w-px flex-shrink-0 bg-zinc-800 hover:bg-blue-500 cursor-ew-resize transition-colors select-none z-10"
         />
 
-        {/* Middle column: Function list */}
-        <div className="flex-shrink-0 overflow-hidden flex flex-col" style={{ width: fnListWidth }}>
+        {/* Function list */}
+        <div className="flex-shrink-0 overflow-hidden flex flex-col border-r border-zinc-800" style={{ width: fnListWidth }}>
           <FunctionList
             file={selectedFile}
             onSelectFunction={setSelectedFunction}
@@ -177,31 +141,38 @@ export default function App() {
           />
         </div>
 
-        {/* Function list resize handle */}
         <div
           onMouseDown={startFnListDrag}
-          className="w-1.5 flex-shrink-0 bg-gray-700 hover:bg-blue-500 active:bg-blue-400 cursor-ew-resize transition-colors select-none z-10"
-          title="Drag to resize"
+          className="w-px flex-shrink-0 bg-zinc-800 hover:bg-blue-500 cursor-ew-resize transition-colors select-none z-10"
         />
 
-        {/* Right column: Panel (mode-dependent) */}
+        {/* Main panel */}
         <div className="flex-1 overflow-hidden flex flex-col min-w-0">
           {mode === 'refactor' ? (
-            <RefactorPanel
-              file={selectedFile}
-              fn={selectedFunction}
-              onProgressUpdate={loadProgress}
-              stats={stats}
-            />
+            <RefactorPanel file={selectedFile} fn={selectedFunction} onProgressUpdate={loadProgress} stats={stats} />
           ) : (
-            <TestPanel
-              file={selectedFile}
-              fn={selectedFunction}
-              onTestsUpdate={loadTests}
-            />
+            <TestPanel file={selectedFile} fn={selectedFunction} onTestsUpdate={loadTests} />
           )}
         </div>
       </div>
     </div>
+  )
+}
+
+function Tab({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+        active
+          ? 'border-blue-500 text-zinc-100'
+          : 'border-transparent text-zinc-400 hover:text-zinc-300'
+      }`}
+    >
+      {label}
+      {count && (
+        <span className={`ml-2 text-xs ${active ? 'text-zinc-400' : 'text-zinc-600'}`}>{count}</span>
+      )}
+    </button>
   )
 }
