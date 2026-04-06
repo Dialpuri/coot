@@ -1,45 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FileDetail, FunctionRecord, Stats } from '../types'
 import { fetchSource, postProgress } from '../api'
+import { highlightCppWithLines } from '../highlight'
 
 interface Props {
   file: FileDetail | null
   fn: FunctionRecord | null
   onProgressUpdate: () => void
   stats?: Stats | null
-}
-
-function highlightMmdbSymbols(code: string, symbols: string[]): string {
-  if (!symbols.length) return escapeHtml(code)
-  let result = escapeHtml(code)
-  // Sort by length descending to replace longer tokens first
-  const sorted = [...symbols].sort((a, b) => b.length - a.length)
-  for (const sym of sorted) {
-    const escaped = escapeHtml(sym)
-    // Replace whole-word occurrences
-    result = result.split(escaped).join(
-      `<mark class="mmdb-symbol">${escaped}</mark>`
-    )
-  }
-  return result
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function addLineNumbers(code: string, startLine: number): string {
-  return code
-    .split('\n')
-    .map((line, i) => {
-      const lineNo = String(startLine + i).padStart(5, ' ')
-      return `<span class="select-none text-gray-600 mr-3">${lineNo}</span>${line}`
-    })
-    .join('\n')
 }
 
 export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Props) {
@@ -198,10 +166,7 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
   // ── Main view ──────────────────────────────────────────────────────────────
 
   const highlightedSource = sourceCode
-    ? addLineNumbers(
-        highlightMmdbSymbols(sourceCode, fn.mmdb_symbols),
-        fn.line
-      )
+    ? highlightCppWithLines(sourceCode, fn.line, fn.mmdb_symbols)
     : ''
 
   return (
@@ -243,7 +208,7 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
               <div className="p-4 text-xs text-gray-500">Loading source…</div>
             ) : sourceCode ? (
               <pre
-                className="p-3 text-xs font-mono leading-5 text-green-400 bg-gray-950 min-h-full whitespace-pre"
+                className="language-cpp p-3 text-xs leading-5 bg-[#0d1117] min-h-full whitespace-pre"
                 dangerouslySetInnerHTML={{ __html: highlightedSource }}
               />
             ) : (

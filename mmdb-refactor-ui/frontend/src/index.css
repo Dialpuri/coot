@@ -2,6 +2,74 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Prism.js "One Dark" theme (custom, matches the app palette) ──────────── */
+code[class*="language-"],
+pre[class*="language-"] {
+  color: #abb2bf;
+  background: none;
+  font-family: 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre;
+  word-spacing: normal;
+  tab-size: 4;
+  hyphens: none;
+}
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata          { color: #5c6370; font-style: italic; }
+.token.punctuation    { color: #abb2bf; }
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted        { color: #e06c75; }
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted       { color: #98c379; }
+.token.operator,
+.token.entity,
+.token.url            { color: #56b6c2; }
+.token.atrule,
+.token.attr-value,
+.token.keyword        { color: #c678dd; }
+.token.function,
+.token.class-name     { color: #61afef; }
+.token.regex,
+.token.important,
+.token.variable       { color: #e5c07b; }
+.token.important,
+.token.bold           { font-weight: bold; }
+.token.italic         { font-style: italic; }
+
+/* MMDB symbol highlight inside Prism-highlighted code */
+mark.mmdb-symbol {
+  background-color: rgba(251, 191, 36, 0.25);
+  color: #fbbf24;
+  border-radius: 2px;
+  padding: 0 1px;
+  font-style: normal;
+}
+
+/* react-simple-code-editor container */
+.rsce-container {
+  background: #0d1117 !important;
+  min-height: 100%;
+  font-family: 'Fira Code', 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 0.75rem !important;
+  line-height: 1.5 !important;
+}
+.rsce-container textarea {
+  outline: none !important;
+  caret-color: #abb2bf;
+}
+
 * {
   box-sizing: border-box;
 }

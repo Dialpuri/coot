@@ -3,6 +3,8 @@ import type { FileDetail, FunctionRecord } from '../types'
 import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction } from '../api'
 import type { TestFilePaths } from '../api'
 import { useHorizontalSplit } from '../hooks/useResize'
+import { highlightCppWithLines, highlightForEditor } from '../highlight'
+import Editor from 'react-simple-code-editor'
 
 interface Props {
   file: FileDetail | null
@@ -11,35 +13,6 @@ interface Props {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function highlightMmdb(code: string, symbols: string[]): string {
-  if (!symbols.length) return escapeHtml(code)
-  let result = escapeHtml(code)
-  const sorted = [...symbols].sort((a, b) => b.length - a.length)
-  for (const sym of sorted) {
-    const esc = escapeHtml(sym)
-    result = result.split(esc).join(`<mark class="mmdb-symbol">${esc}</mark>`)
-  }
-  return result
-}
-
-function addLineNumbers(code: string, startLine: number): string {
-  return code
-    .split('\n')
-    .map((line, i) => {
-      const n = String(startLine + i).padStart(5, ' ')
-      return `<span class="select-none text-gray-600 mr-3">${n}</span>${line}`
-    })
-    .join('\n')
-}
 
 /**
  * Parse streamed "both" response into mmdb and gemmi sections.
@@ -104,13 +77,16 @@ function TestEditor({
           <span className="ml-auto text-xs text-blue-400 animate-pulse">{streamLabel}</span>
         )}
       </div>
-      <div className="flex-1 relative overflow-hidden">
-        <textarea
+      <div className="flex-1 relative overflow-auto bg-[#0d1117]">
+        <Editor
           value={value}
-          onChange={e => onChange(e.target.value)}
-          spellCheck={false}
-          className="absolute inset-0 w-full h-full resize-none bg-gray-950 text-xs font-mono text-green-300 p-3 focus:outline-none leading-5 border-none"
+          onValueChange={onChange}
+          highlight={highlightForEditor}
+          padding={12}
+          className="rsce-container min-h-full"
+          textareaClassName="focus:outline-none"
           placeholder={`// ${label} code will appear here\n// You can edit it directly`}
+          style={{ minHeight: '100%' }}
         />
         {streaming && (
           <div className="absolute bottom-2 right-2 pointer-events-none">
@@ -451,7 +427,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
   }
 
   const highlightedSource = sourceCode
-    ? addLineNumbers(highlightMmdb(sourceCode, fn.mmdb_symbols), fn.line)
+    ? highlightCppWithLines(sourceCode, fn.line, fn.mmdb_symbols)
     : ''
 
   const isStreamingMmdb = streaming === 'mmdb' || streaming === 'both'
@@ -504,7 +480,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
           <div className="p-3 text-xs text-gray-500">Loading source…</div>
         ) : sourceCode ? (
           <pre
-            className="p-3 text-xs font-mono leading-5 text-green-400 whitespace-pre"
+            className="language-cpp p-3 text-xs leading-5 whitespace-pre"
             dangerouslySetInnerHTML={{ __html: highlightedSource }}
           />
         ) : (
