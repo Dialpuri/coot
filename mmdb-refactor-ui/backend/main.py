@@ -17,7 +17,7 @@ from pydantic import BaseModel
 _parser = argparse.ArgumentParser(description="MMDB Refactor Manager backend")
 _parser.add_argument(
     "--report",
-    default="/Users/dialpuri/lmb/coot/mmdb-recon/mmdb_usage_report.json",
+    default="../mmdb-recon/mmdb_usage_report.json",
     help="Path to mmdb_usage_report.json produced by the AST tool",
 )
 _parser.add_argument(
