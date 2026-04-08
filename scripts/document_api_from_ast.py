@@ -289,7 +289,7 @@ def filter_to_relevant_methods(class_body: str, wanted_methods: set[str]) -> str
 # ---------------------------------------------------------------------------
 
 METHOD_DOC_SYSTEM = """\
-You are an expert C++ software engineer writing precise API reference \
+You are an expert C++ software engineer writing concise API reference \
 documentation for the MMDB2 structural biology library. \
 You will be given a C++ class declaration from an MMDB2 header file. \
 Lines annotated with '// *** USED IN COOT ***' are the methods you MUST \
@@ -310,29 +310,26 @@ are the methods you must document in full):
 {class_body}
 ```
 
-Produce documentation in this exact format:
+Produce documentation in this exact compact format — no markdown tables, \
+no repeated field headers. Each method block looks like this:
 
----
+#### `ClassName::methodName(param_type param) -> return_type`
+One sentence describing what the method does.
+Params: `param` — what it represents. Omit this line if there are no parameters.
+Returns: what is returned and under what conditions. Omit if void.
+Side effects: any state mutated or I/O performed. Omit if none.
+Errors: conditions under which it fails or returns null. Omit if none.
+
+Rules:
+- Use `ClassName::methodName` in the heading (always qualify with the class name).
+- Keep each field to one line. Be direct — no filler words.
+- Omit any field whose answer would be "none" or "void" (saves space).
+- Repeat the block for every method marked '// *** USED IN COOT ***'.
+- Skip all unmarked methods entirely.
+- Start your response with the class heading shown below.
+
 ## `{class_name}`
-
-> One-sentence description of the class's overall responsibility.
-
-### Methods
-
-#### `return_type methodName(params)`
-
-| Field        | Detail |
-|--------------|--------|
-| **Summary**  | One-sentence description. |
-| **Parameters** | `param` — type and meaning. Use "none" if no params. |
-| **Returns**  | What is returned and when. Use "void" if nothing. |
-| **Behaviour** | What the method does internally. |
-| **Side effects** | State mutations, I/O, etc. Use "none" if pure. |
-| **Errors / exceptions** | Failure conditions. Use "none" if not applicable. |
-
-Repeat the method block for every method marked '// *** USED IN COOT ***'. \
-Skip undocumented / unmarked methods entirely. \
-Use markdown throughout.\
+One sentence describing the class's overall responsibility.\
 """
 
 INDEX_SYSTEM = """\
@@ -346,13 +343,12 @@ codebase (refactoring target).
 
 Produce an **API index** with:
 
-1. **Class index** — table: Class | Header file | One-line description (sorted by class).
-2. **Method quick-reference** — flat table: Class | Method signature | One-line summary \
-(sorted by class then method). This is the primary lookup table for developers.
-3. **Notable patterns** — brief prose on consistent conventions across the API \
-(ownership/lifetime, error handling, naming, output parameters, etc.).
-
-Use markdown.
+1. **Class index** — one line per class: `ClassName (header.h)` — description.
+2. **Method quick-reference** — one line per method: \
+`ClassName::method(params) -> return` — one-line summary. \
+Sort by class then method name.
+3. **Notable patterns** — brief prose on consistent conventions: \
+ownership/lifetime, error handling, naming, output parameters, etc.
 
 ---
 

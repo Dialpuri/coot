@@ -1,14 +1,16 @@
 """
 doc_extractor.py — Extract relevant class/method sections from LLM-generated
-markdown docs (produced by document_methods.py) given a list of MMDB symbols.
+markdown docs (produced by document_api_from_ast.py) given a list of MMDB symbols.
 
-Markdown structure assumed:
-  ### `file_stem`          ← file group (level 3)
-  ## `ClassName`           ← class / struct (level 2)
-  ### Methods
-  #### `return method()`   ← individual method (level 4)
-  ## Free Functions
-  #### `return fn()`
+Markdown structure assumed (compact prose format):
+  ## `ClassName`                            ← class (level 2)
+  One sentence description.
+  #### `ClassName::methodName(params) -> return_type`   ← method (level 4)
+  One sentence description.
+  Params: `x` — meaning.
+  Returns: what and when.
+  Side effects: ...
+  Errors: ...
 
 Real MMDB symbol formats seen in the AST report:
   "class mmdb::Chain"                      → class Chain
@@ -63,7 +65,12 @@ def _split_h4_blocks(body: str) -> list[tuple[str, str]]:
 
 
 def _method_name_from_heading(heading: str) -> str:
-    """Extract the bare method name from '#### int Foo::Bar(int x)'."""
+    """
+    Extract the bare method name from a heading like:
+      'ClassName::MethodName(params) -> return_type'
+      'int Foo::Bar(int x)'
+    Returns the token immediately before '('.
+    """
     m = re.search(r"(\w+)\s*\(", heading)
     return m.group(1) if m else heading
 

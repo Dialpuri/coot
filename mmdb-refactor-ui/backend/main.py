@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import doc_extractor
+
 # ── Config ──────────────────────────────────────────────────────────────────
 _parser = argparse.ArgumentParser(description="MMDB Refactor Manager backend")
 _parser.add_argument(
@@ -28,12 +30,24 @@ _parser.add_argument(
     "--cxx-flags", default="",
     help="Extra flags to pass to the compiler (e.g. -I/extra/include)",
 )
+_parser.add_argument(
+    "--mmdb-docs",
+    default="../mmdb-recon/llm/mmdb_methods.md",
+    help="Path to the mmdb_methods.md file produced by document_methods.py",
+)
 _args, _ = _parser.parse_known_args()
 
 REPORT_PATH = _args.report
 PROGRESS_PATH = Path(__file__).parent / "progress.json"
 TESTS_PATH = Path(__file__).parent / "tests.json"
 OLLAMA_URL = "http://localhost:11434/api/generate"
+
+# ── MMDB API docs (loaded once at startup) ───────────────────────────────────
+_mmdb_docs_markdown = doc_extractor.load_docs(_args.mmdb_docs)
+if _mmdb_docs_markdown:
+    print(f"Loaded MMDB docs from {_args.mmdb_docs} ({len(_mmdb_docs_markdown):,} chars)")
+else:
+    print(f"WARNING: MMDB docs not found at {_args.mmdb_docs} — prompts will lack API context")
 
 
 # ── GTest detection ───────────────────────────────────────────────────────────
@@ -488,9 +502,25 @@ def load_test_for_function(
     }
 
 
+def _build_api_context(symbols: list[str]) -> str:
+    """Return a markdown snippet with only the MMDB doc sections relevant to symbols."""
+    if not _mmdb_docs_markdown or not symbols:
+        return ""
+    excerpt = doc_extractor.extract_for_symbols(_mmdb_docs_markdown, symbols)
+    if not excerpt:
+        return ""
+    return (
+        "\n\n## Relevant MMDB API Reference\n\n"
+        "The following is extracted from the MMDB API documentation. "
+        "Use it to understand the types and methods in the source code below.\n\n"
+        + excerpt
+    )
+
+
 @app.post("/api/generate-test")
 async def generate_test(req: GenerateTestRequest):
     symbols_list = ", ".join(req.mmdb_symbols) if req.mmdb_symbols else "none"
+    api_context  = _build_api_context(req.mmdb_symbols)
 
     if req.target == "mmdb":
         prompt = (
@@ -502,7 +532,8 @@ async def generate_test(req: GenerateTestRequest):
         if req.additional_instructions.strip():
             prompt += f"Additional instructions: {req.additional_instructions.strip()}\n"
         prompt += (
-            f"\n## Source code:\n```cpp\n{req.source_code}\n```\n\n"
+            f"{api_context}\n\n"
+            f"## Source code:\n```cpp\n{req.source_code}\n```\n\n"
             "Write a focused GTest unit test that:\n"
             "- Sets up minimal MMDB2 structures needed to call the function\n"
             "- Calls the function with realistic inputs\n"
@@ -522,7 +553,8 @@ async def generate_test(req: GenerateTestRequest):
         if req.additional_instructions.strip():
             prompt += f"Additional instructions: {req.additional_instructions.strip()}\n"
         prompt += (
-            f"\n## Original MMDB source (to be refactored):\n```cpp\n{req.source_code}\n```\n\n"
+            f"{api_context}\n\n"
+            f"## Original MMDB source (to be refactored):\n```cpp\n{req.source_code}\n```\n\n"
             "Write a GTest unit test for the Gemmi-refactored version that:\n"
             "- Sets up gemmi::Structure / gemmi::Model / gemmi::Chain / gemmi::Residue / gemmi::Atom\n"
             "- Tests the SAME logical behaviour as the MMDB version would\n"
@@ -542,7 +574,8 @@ async def generate_test(req: GenerateTestRequest):
         if req.additional_instructions.strip():
             prompt += f"Additional instructions: {req.additional_instructions.strip()}\n"
         prompt += (
-            f"\n## Source code:\n```cpp\n{req.source_code}\n```\n\n"
+            f"{api_context}\n\n"
+            f"## Source code:\n```cpp\n{req.source_code}\n```\n\n"
             "Both tests must verify the SAME logical behaviour with equivalent assertions, "
             "but use each library's own types and APIs for setup.\n\n"
             "Output EXACTLY this format — no other text:\n\n"
