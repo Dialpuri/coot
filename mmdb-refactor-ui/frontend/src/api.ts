@@ -169,3 +169,51 @@ export async function gitCommitTestFiles(
     onChunk(decoder.decode(value, { stream: true }))
   }
 }
+
+// ── Single-function validate + fix ────────────────────────────────────────────
+
+export type ValidateEvent =
+  | { type: 'start';          max: number; variant: string }
+  | { type: 'compiling';      attempt: number; max: number }
+  | { type: 'compile_output'; text: string; ok: boolean }
+  | { type: 'running';        attempt: number }
+  | { type: 'run_output';     text: string; ok: boolean }
+  | { type: 'fixing';         attempt: number }
+  | { type: 'fixed_code';     code: string }
+  | { type: 'done';           status: 'pass' | 'fail'; attempts: number; code: string }
+
+export async function* validateAndFixTest(
+  rel_source_path: string,
+  fn_name: string,
+  fn_line: number,
+  variant: 'mmdb' | 'gemmi',
+  test_code: string,
+  model: string,
+  signal?: AbortSignal,
+): AsyncGenerator<ValidateEvent> {
+  const response = await fetch(`${BASE}/tests/validate-fix`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rel_source_path, fn_name, fn_line, variant, test_code, model }),
+    signal,
+  })
+  if (!response.ok) throw new Error(`Server error: ${response.status}`)
+  if (!response.body) throw new Error('No response body')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line.trim()) {
+        try { yield JSON.parse(line) as ValidateEvent } catch { /* skip */ }
+      }
+    }
+  }
+}

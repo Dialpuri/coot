@@ -196,7 +196,7 @@ class GenerateTestRequest(BaseModel):
     source_code: str
     mmdb_symbols: list[str]
     target: str = "both"   # "mmdb" | "gemmi" | "both"
-    model: str = "llama3.2"
+    model: str = "gemma4"
     additional_instructions: str = ""
 
 
@@ -224,9 +224,18 @@ class GitCommitRequest(BaseModel):
 
 
 class GenerateAllRequest(BaseModel):
-    model: str = "llama3.2"
+    model: str = "gemma4"
     skip_existing: bool = True
     additional_instructions: str = ""
+
+
+class ValidateFixRequest(BaseModel):
+    rel_source_path: str
+    fn_name: str
+    fn_line: int
+    variant: str        # "mmdb" | "gemmi"
+    test_code: str
+    model: str = "gemma4"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -891,6 +900,52 @@ async def _call_ollama(model: str, prompt: str) -> str:
         resp = await client.post(OLLAMA_URL, json=payload)
         resp.raise_for_status()
         return resp.json().get("response", "")
+
+
+@app.post("/api/tests/validate-fix")
+async def validate_and_fix(req: ValidateFixRequest):
+    """
+    Compile + run a single test variant. On failure, ask the LLM to fix it and
+    retry up to MAX_TEST_RETRIES times. Streams NDJSON progress events.
+
+    Event types: start | compiling | compile_output | running | run_output |
+                 fixing | fixed_code | done
+    """
+    async def stream():
+        path = get_test_file_path(req.rel_source_path, req.fn_name, req.variant)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current_code = req.test_code
+
+        yield json.dumps({"type": "start", "max": MAX_TEST_RETRIES, "variant": req.variant}) + "\n"
+
+        for attempt in range(1, MAX_TEST_RETRIES + 1):
+            path.write_text(wrap_test_content(current_code, req.variant, req.fn_name))
+
+            yield json.dumps({"type": "compiling", "attempt": attempt, "max": MAX_TEST_RETRIES}) + "\n"
+            compile_ok, compile_out = await _compile_test(path)
+            yield json.dumps({"type": "compile_output", "text": compile_out, "ok": compile_ok}) + "\n"
+
+            if compile_ok:
+                yield json.dumps({"type": "running", "attempt": attempt}) + "\n"
+                run_ok, run_out = await _run_test(path)
+                yield json.dumps({"type": "run_output", "text": run_out, "ok": run_ok}) + "\n"
+                if run_ok:
+                    yield json.dumps({"type": "done", "status": "pass", "attempts": attempt, "code": current_code}) + "\n"
+                    return
+                error_out = f"Compile: OK\nRun failed:\n{run_out}"
+            else:
+                error_out = compile_out
+
+            if attempt < MAX_TEST_RETRIES:
+                yield json.dumps({"type": "fixing", "attempt": attempt}) + "\n"
+                fix_prompt = _build_fix_prompt(req.fn_name, req.variant, current_code, error_out, attempt)
+                fixed_raw = await _call_ollama(req.model, fix_prompt)
+                current_code = _strip_fences_py(fixed_raw) or current_code
+                yield json.dumps({"type": "fixed_code", "code": current_code}) + "\n"
+            else:
+                yield json.dumps({"type": "done", "status": "fail", "attempts": attempt, "code": current_code}) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 @app.post("/api/tests/generate-all")

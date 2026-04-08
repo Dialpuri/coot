@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { FileDetail, FunctionRecord } from '../types'
-import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles } from '../api'
+import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles, validateAndFixTest } from '../api'
 import type { TestFilePaths } from '../api'
 import { useHorizontalSplit } from '../hooks/useResize'
 import { highlightCppWithLines, highlightForEditor } from '../highlight'
@@ -105,9 +105,12 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
     message: string
   } | null>(null)
   const [committing, setCommitting] = useState(false)
+  const [validating, setValidating] = useState<false | 'mmdb' | 'gemmi'>(false)
+
   const terminalRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const compileAbortRef = useRef<AbortController | null>(null)
+  const validateAbortRef = useRef<AbortController | null>(null)
 
   const testKey = file && fn ? `${file.rel_path}::${fn.name}:${fn.line}` : null
 
@@ -210,6 +213,10 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
         } catch {
           setTerminal(prev => prev + '[WRITE ERROR] Could not write files\n')
         }
+
+        // Auto validate + fix each generated variant
+        if (finalMmdb) await runValidateAndFix('mmdb', finalMmdb)
+        if (finalGemmi) await runValidateAndFix('gemmi', finalGemmi)
       }
     } catch (e: unknown) {
       if (!(e instanceof Error && e.name === 'AbortError')) setError(String(e))
@@ -303,6 +310,60 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
       if (!(e instanceof Error && e.name === 'AbortError')) setError(String(e))
     } finally {
       setCompiling(false)
+    }
+  }
+
+  const runValidateAndFix = async (variant: 'mmdb' | 'gemmi', code: string) => {
+    if (!file || !fn || !code.trim()) return
+    if (validating === variant) { validateAbortRef.current?.abort(); return }
+
+    setValidating(variant)
+    setShowTerminal(true)
+    validateAbortRef.current = new AbortController()
+
+    const setCode = variant === 'mmdb' ? setMmdbTest : setGemmiTest
+
+    try {
+      const gen = validateAndFixTest(
+        file.rel_path, fn.name, fn.line, variant, code, model,
+        validateAbortRef.current.signal,
+      )
+      for await (const ev of gen) {
+        switch (ev.type) {
+          case 'start':
+            setTerminal(prev => prev + `\n[VALIDATE] ${variant.toUpperCase()} — up to ${ev.max} attempt(s)\n`)
+            break
+          case 'compiling':
+            setTerminal(prev => prev + `[COMPILE]  attempt ${ev.attempt}/${ev.max}…\n`)
+            break
+          case 'compile_output':
+            if (!ev.ok) setTerminal(prev => prev + ev.text)
+            break
+          case 'running':
+            setTerminal(prev => prev + `[RUN]\n`)
+            break
+          case 'run_output':
+            setTerminal(prev => prev + ev.text)
+            break
+          case 'fixing':
+            setTerminal(prev => prev + `\n[FIX]     Asking LLM to fix attempt ${ev.attempt}…\n`)
+            break
+          case 'fixed_code':
+            setCode(ev.code)
+            setDirty(true)
+            setSaved(false)
+            break
+          case 'done':
+            setTerminal(prev => prev + `\n[${ev.status.toUpperCase()}]    ${variant.toUpperCase()} — ${ev.attempts} attempt(s)\n`)
+            if (ev.code) { setCode(ev.code); setDirty(true); setSaved(false) }
+            break
+        }
+      }
+    } catch (e: unknown) {
+      if (!(e instanceof Error && e.name === 'AbortError'))
+        setTerminal(prev => prev + `[ERROR] ${String(e)}\n`)
+    } finally {
+      setValidating(false)
     }
   }
 
@@ -476,6 +537,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
             <span className="text-xs text-zinc-500">
               Terminal
               {compiling && <span className="ml-2 text-amber-500 animate-pulse">compiling {compiling}…</span>}
+              {validating && <span className="ml-2 text-blue-400 animate-pulse">validating {validating}…</span>}
             </span>
             <div className="flex gap-3">
               <button onClick={() => setTerminal('')} className="btn btn-ghost btn-sm">Clear</button>
@@ -572,11 +634,28 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
           <button onClick={handleWriteFiles} disabled={!mmdbTest && !gemmiTest} className="btn btn-secondary btn-sm">
             Write to File
           </button>
-          <button onClick={() => compileAndRun('mmdb')} disabled={!mmdbTest || compiling === 'gemmi'} className="btn btn-secondary btn-sm">
+          <button onClick={() => compileAndRun('mmdb')} disabled={!mmdbTest || compiling === 'gemmi' || !!validating} className="btn btn-secondary btn-sm">
             {compiling === 'mmdb' ? 'Stop' : 'Run MMDB'}
           </button>
-          <button onClick={() => compileAndRun('gemmi')} disabled={!gemmiTest || compiling === 'mmdb'} className="btn btn-secondary btn-sm">
+          <button onClick={() => compileAndRun('gemmi')} disabled={!gemmiTest || compiling === 'mmdb' || !!validating} className="btn btn-secondary btn-sm">
             {compiling === 'gemmi' ? 'Stop' : 'Run Gemmi'}
+          </button>
+          <div className="w-px h-4 bg-zinc-700 self-center" />
+          <button
+            onClick={() => runValidateAndFix('mmdb', mmdbTest)}
+            disabled={!mmdbTest || !!compiling || validating === 'gemmi'}
+            className={`btn btn-sm ${validating === 'mmdb' ? 'btn-primary' : 'btn-secondary'}`}
+            title="Compile, run, and auto-fix with LLM (up to 5 retries)"
+          >
+            {validating === 'mmdb' ? 'Stop' : 'Validate & Fix MMDB'}
+          </button>
+          <button
+            onClick={() => runValidateAndFix('gemmi', gemmiTest)}
+            disabled={!gemmiTest || !!compiling || validating === 'mmdb'}
+            className={`btn btn-sm ${validating === 'gemmi' ? 'btn-primary' : 'btn-secondary'}`}
+            title="Compile, run, and auto-fix with LLM (up to 5 retries)"
+          >
+            {validating === 'gemmi' ? 'Stop' : 'Validate & Fix Gemmi'}
           </button>
           {!showTerminal && terminal && (
             <button onClick={() => setShowTerminal(true)} className="btn btn-ghost btn-sm">Show output</button>
