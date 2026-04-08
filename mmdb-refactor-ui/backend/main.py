@@ -267,24 +267,35 @@ def get_test_file_path(rel_source_path: str, fn_name: str, variant: str) -> Path
     return tests_dir / f"{safe}_{variant}_test.cc"
 
 
-def wrap_test_content(content: str, variant: str, fn_name: str) -> str:
-    """Ensure the .cc file has a gtest header and a main()."""
-    content = content.strip()
-    needs_header = "#include <gtest/gtest.h>" not in content
-    needs_main   = "RUN_ALL_TESTS()" not in content and "int main(" not in content
+_VARIANT_INCLUDES: dict[str, list[str]] = {
+    "mmdb":  ["#include <mmdb2/mmdb_manager.h>"],
+    "gemmi": ["#include <gemmi/structure.hpp>", "#include <gemmi/model.hpp>"],
+}
 
-    parts: list[str] = []
-    if needs_header:
-        parts.append(f"// Auto-generated {variant.upper()} test for {fn_name}")
-        parts.append("#include <gtest/gtest.h>")
-        parts.append("")
-    parts.append(content)
+MAX_TEST_RETRIES = 5
+
+# ── Compile/run constants (shared with batch retry) ───────────────────────────
+_COOT_API_DIR  = "/Users/dialpuri/lmb/build-coot-and-deps/"
+_COOT_API_NAME = "cootapi"
+_MMDB_API_DIR  = "/opt/homebrew/Cellar/mmdb2/2.0.22/lib"
+_MMDB_API_NAME = "mmdb2"
+
+
+def wrap_test_content(content: str, variant: str, fn_name: str) -> str:
+    """Ensure the .cc file has a gtest header, variant includes, and a main()."""
+    content = content.strip()
+    header: list[str] = [f"// Auto-generated {variant.upper()} test for {fn_name}"]
+    if "#include <gtest/gtest.h>" not in content:
+        header.append("#include <gtest/gtest.h>")
+    for inc in _VARIANT_INCLUDES.get(variant, []):
+        if inc not in content:
+            header.append(inc)
+    needs_main = "RUN_ALL_TESTS()" not in content and "int main(" not in content
+    parts = ["\n".join(header), "", content]
     if needs_main:
-        parts.append("")
-        parts.append("int main(int argc, char **argv) {")
-        parts.append("  ::testing::InitGoogleTest(&argc, argv);")
-        parts.append("  return RUN_ALL_TESTS();")
-        parts.append("}")
+        parts += ["", "int main(int argc, char **argv) {",
+                  "  ::testing::InitGoogleTest(&argc, argv);",
+                  "  return RUN_ALL_TESTS();", "}"]
     return "\n".join(parts) + "\n"
 
 
@@ -623,6 +634,62 @@ async def generate_test(req: GenerateTestRequest):
     return StreamingResponse(stream_ollama(), media_type="text/plain")  # /api/generate-test
 
 
+# ── Compile/run helpers ───────────────────────────────────────────────────────
+
+def _make_compile_cmd(test_file: Path, output_bin: Path) -> str:
+    return (
+        f'{_args.cxx} -std=c++17 "{test_file}" -o "{output_bin}" '
+        f'{_gtest_flags} -I"{_coot_root}" -pthread '
+        f'-Wl,-rpath,{_COOT_API_DIR} -L {_COOT_API_DIR} -L {_MMDB_API_DIR} '
+        f'-l{_COOT_API_NAME} -l {_MMDB_API_NAME}'
+    )
+
+
+async def _compile_test(test_file: Path) -> tuple[bool, str]:
+    """Compile a test file; return (success, output)."""
+    bin_dir = test_file.parent / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    output_bin = bin_dir / test_file.stem
+    cmd = _make_compile_cmd(test_file, output_bin)
+    if _args.cxx_flags:
+        cmd += f" {_args.cxx_flags}"
+    proc = await asyncio.create_subprocess_shell(
+        cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        cwd=str(_coot_root),
+    )
+    stdout, _ = await proc.communicate()
+    return proc.returncode == 0, stdout.decode(errors="replace")
+
+
+async def _run_test(test_file: Path) -> tuple[bool, str]:
+    """Run a compiled test binary; return (success, output)."""
+    output_bin = test_file.parent / "bin" / test_file.stem
+    if not output_bin.exists():
+        return False, "binary not found"
+    run_proc = await asyncio.create_subprocess_exec(
+        str(output_bin), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await run_proc.communicate()
+    return run_proc.returncode == 0, stdout.decode(errors="replace")
+
+
+def _build_fix_prompt(fn_name: str, variant: str, current_code: str, error: str, attempt: int) -> str:
+    inc_hint = (
+        "Required headers:\n#include <gtest/gtest.h>\n#include <mmdb2/mmdb_manager.h>"
+        if variant == "mmdb" else
+        "Required headers:\n#include <gtest/gtest.h>\n#include <gemmi/structure.hpp>\n#include <gemmi/model.hpp>"
+    )
+    return (
+        f"A C++ GTest failed to compile or run (attempt {attempt} of {MAX_TEST_RETRIES}). Fix it.\n\n"
+        f"Function: `{fn_name}`  |  Variant: {variant.upper()}\n\n"
+        f"{inc_hint}\n\n"
+        f"## Current code:\n```cpp\n{current_code}\n```\n\n"
+        f"## Error:\n```\n{error[:2000]}\n```\n\n"
+        "Output ONLY the corrected test in a single ```cpp``` block. "
+        "Include all necessary headers at the top."
+    )
+
+
 # ── Test file write / compile / run endpoints ─────────────────────────────────
 
 @app.get("/api/tests/file-paths")
@@ -664,17 +731,7 @@ async def compile_and_run(req: CompileRunRequest):
     bin_dir.mkdir(exist_ok=True)
     output_bin = bin_dir / test_file.stem
 
-    coot_api_dir = "/Users/dialpuri/lmb/build-coot-and-deps/"
-    coot_api_name = "cootapi"
-
-    mmdb_api_dir = "/opt/homebrew/Cellar/mmdb2/2.0.22/lib"
-    mmdb_api_name = "mmdb2"
-
-
-    compile_cmd = (
-        f'{_args.cxx} -std=c++17 "{test_file}" -o "{output_bin}" '
-        f'{_gtest_flags} -I"{_coot_root}" -pthread -Wl,-rpath,{coot_api_dir} -L {coot_api_dir} -L {mmdb_api_dir} -l{coot_api_name} -l {mmdb_api_name}'
-    )
+    compile_cmd = _make_compile_cmd(test_file, output_bin)
     if _args.cxx_flags:
         compile_cmd += f" {_args.cxx_flags}"
 
@@ -805,6 +862,9 @@ def _build_both_prompt(fn_name: str, source: str, symbols: list[str], extra: str
         f"\n## Source code:\n```cpp\n{source}\n```\n\n"
         "Both tests must verify the SAME logical behaviour with equivalent assertions, "
         "but use each library's own types and APIs for setup.\n\n"
+        "Required headers for each variant:\n"
+        "  MMDB test:  #include <gtest/gtest.h>  #include <mmdb2/mmdb_manager.h>\n"
+        "  Gemmi test: #include <gtest/gtest.h>  #include <gemmi/structure.hpp>  #include <gemmi/model.hpp>\n\n"
         "Output EXACTLY this format — no other text:\n\n"
         "=== MMDB TEST ===\n"
         "```cpp\n"
@@ -836,13 +896,12 @@ async def _call_ollama(model: str, prompt: str) -> str:
 @app.post("/api/tests/generate-all")
 async def generate_all_tests(req: GenerateAllRequest):
     """
-    Iterate every function in every file and generate both MMDB and Gemmi tests.
-    Streams NDJSON progress lines: {"type": "start"|"progress"|"skip"|"done"|"error"|"finish", ...}
+    Iterate every function, generate both tests, compile+run each, retry up to
+    MAX_TEST_RETRIES times on failure using the compile error as LLM feedback.
+    Streams NDJSON: start | progress | skip | attempt | done | error | finish
     """
     async def stream_progress():
         tests = load_tests()
-
-        # Collect all (rel_path, fn_dict) pairs
         work = [
             (entry["rel_path"], fn)
             for entry in _files
@@ -856,10 +915,9 @@ async def generate_all_tests(req: GenerateAllRequest):
         for rel_path, fn in work:
             fn_name: str = fn["name"]
             fn_line: int = fn["line"]
-            fn_end: int = fn["end_line"]
+            fn_end: int  = fn["end_line"]
             key = f"{rel_path}::{fn_name}:{fn_line}"
 
-            # Skip if both variants already exist
             if req.skip_existing:
                 rec = tests.get(key, {})
                 if rec.get("mmdb_test") and rec.get("gemmi_test"):
@@ -876,41 +934,72 @@ async def generate_all_tests(req: GenerateAllRequest):
             }) + "\n"
 
             try:
-                # Load source lines
+                # ── Load source ──────────────────────────────────────────────
                 full_path = os.path.join(_coot_root, rel_path)
                 with open(full_path, "r", errors="replace") as f:
                     all_lines = f.readlines()
                 source = "".join(all_lines[max(0, fn_line - 1):min(len(all_lines), fn_end)])
 
-                # Call Ollama
+                # ── Initial LLM generation ───────────────────────────────────
                 prompt = _build_both_prompt(fn_name, source, fn.get("mmdb_symbols", []), req.additional_instructions)
                 raw = await _call_ollama(req.model, prompt)
-
                 mmdb_raw, gemmi_raw = _parse_both_sections_py(raw)
-                mmdb_text = _strip_fences_py(mmdb_raw)
-                gemmi_text = _strip_fences_py(gemmi_raw)
+                initial = {"mmdb": _strip_fences_py(mmdb_raw), "gemmi": _strip_fences_py(gemmi_raw)}
 
-                # Write .cc files
-                for variant, text in [("mmdb", mmdb_text), ("gemmi", gemmi_text)]:
-                    if text.strip():
-                        path = get_test_file_path(rel_path, fn_name, variant)
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_text(wrap_test_content(text, variant, fn_name))
+                # ── Compile-run-retry loop per variant ───────────────────────
+                variant_results: dict[str, dict] = {}
+                for variant in ("mmdb", "gemmi"):
+                    current_code = initial[variant]
+                    if not current_code.strip():
+                        variant_results[variant] = {"code": "", "status": "skip", "attempts": 0}
+                        continue
 
-                # Persist to tests.json
+                    path = get_test_file_path(rel_path, fn_name, variant)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+
+                    for attempt in range(1, MAX_TEST_RETRIES + 1):
+                        path.write_text(wrap_test_content(current_code, variant, fn_name))
+                        compile_ok, compile_out = await _compile_test(path)
+
+                        if compile_ok:
+                            run_ok, run_out = await _run_test(path)
+                            if run_ok:
+                                variant_results[variant] = {"code": current_code, "status": "pass", "attempts": attempt}
+                                break
+                            error_out = f"Compile: OK\nRun output:\n{run_out}"
+                        else:
+                            error_out = compile_out
+
+                        if attempt < MAX_TEST_RETRIES:
+                            yield json.dumps({
+                                "type": "attempt",
+                                "key": key, "fn": fn_name, "file": rel_path,
+                                "variant": variant, "attempt": attempt, "max": MAX_TEST_RETRIES,
+                                "error": error_out[:600],
+                                "done": done, "skipped": skipped, "errors": errors, "total": total,
+                            }) + "\n"
+                            fix_prompt = _build_fix_prompt(fn_name, variant, current_code, error_out, attempt)
+                            fixed_raw = await _call_ollama(req.model, fix_prompt)
+                            current_code = _strip_fences_py(fixed_raw) or current_code
+                        else:
+                            variant_results[variant] = {"code": current_code, "status": "fail", "attempts": attempt}
+
+                # ── Persist best result to tests.json ────────────────────────
                 rec = tests.get(key, {"notes": "", "status": "draft"})
-                if mmdb_text.strip():
-                    rec["mmdb_test"] = mmdb_text
-                if gemmi_text.strip():
-                    rec["gemmi_test"] = gemmi_text
+                for variant, result in variant_results.items():
+                    if result["code"].strip():
+                        rec[f"{variant}_test"] = result["code"]
                 tests[key] = rec
                 save_tests(tests)
 
+                mmdb_r = variant_results.get("mmdb",  {"status": "skip", "attempts": 0})
+                gemmi_r = variant_results.get("gemmi", {"status": "skip", "attempts": 0})
                 done += 1
                 yield json.dumps({
                     "type": "done", "key": key, "fn": fn_name, "file": rel_path,
                     "done": done, "skipped": skipped, "errors": errors, "total": total,
-                    "has_mmdb": bool(mmdb_text.strip()), "has_gemmi": bool(gemmi_text.strip()),
+                    "mmdb_status":   mmdb_r["status"],   "mmdb_attempts":  mmdb_r["attempts"],
+                    "gemmi_status":  gemmi_r["status"],  "gemmi_attempts": gemmi_r["attempts"],
                 }) + "\n"
 
             except Exception as ex:
