@@ -104,10 +104,11 @@ export async function writeTestFiles(
 // ── Batch generation ──────────────────────────────────────────────────────────
 
 export type BatchEvent =
-  | { type: 'start'; total: number }
+  | { type: 'start';    total: number }
   | { type: 'progress'; key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number }
   | { type: 'skip';     key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number }
-  | { type: 'done';     key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number; has_mmdb: boolean; has_gemmi: boolean }
+  | { type: 'attempt';  key: string; fn: string; file: string; variant: string; attempt: number; max: number; error: string; done: number; skipped: number; errors: number; total: number }
+  | { type: 'done';     key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number; mmdb_status: string; mmdb_attempts: number; gemmi_status: string; gemmi_attempts: number }
   | { type: 'error';    key: string; fn: string; file: string; done: number; skipped: number; errors: number; total: number; message: string }
   | { type: 'finish';   done: number; skipped: number; errors: number; total: number }
 

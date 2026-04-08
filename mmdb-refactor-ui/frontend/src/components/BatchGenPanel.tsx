@@ -1,6 +1,18 @@
 import { useEffect, useRef } from 'react'
 import type { BatchState, BatchConfig } from '../hooks/useBatch'
 
+function VariantTag({ label, status, attempts }: { label: string; status: string; attempts: number }) {
+  if (status === 'skip') return <span className="text-zinc-700">{label}·</span>
+  const color = status === 'pass' ? 'text-emerald-500' : 'text-red-400'
+  const retryColor = attempts > 1 ? 'text-amber-500' : 'text-zinc-600'
+  return (
+    <span className={color}>
+      {label}
+      {attempts > 1 && <span className={`${retryColor} text-[10px]`}>×{attempts}</span>}
+    </span>
+  )
+}
+
 interface Props {
   state: BatchState
   config: BatchConfig
@@ -78,8 +90,22 @@ export default function BatchGenPanel({ state, config, onConfigChange, onStart, 
       {phase !== 'idle' && (
         <div className="px-4 py-3 border-b border-zinc-800 flex-shrink-0">
           {phase === 'running' && (
-            <div className="text-xs font-mono text-zinc-300 truncate mb-1.5 min-h-[1rem]">
-              {currentFn ?? 'Starting…'}
+            <div className="min-h-[2.5rem] mb-1.5">
+              <div className="text-xs font-mono text-zinc-300 truncate">
+                {currentFn ?? 'Starting…'}
+              </div>
+              {state.currentAttempt ? (
+                <div className="flex items-start gap-1.5 mt-0.5">
+                  <span className="text-xs text-amber-500 flex-shrink-0">
+                    retrying {state.currentAttempt.variant} ({state.currentAttempt.attempt}/{state.currentAttempt.max})
+                  </span>
+                  <span className="text-xs text-zinc-600 font-mono truncate" title={state.currentAttempt.error}>
+                    {state.currentAttempt.error.split('\n')[0]}
+                  </span>
+                </div>
+              ) : (
+                <div className="text-xs text-zinc-600 truncate font-mono mt-0.5">{currentFile ?? ''}</div>
+              )}
             </div>
           )}
           {phase === 'finished' && (
@@ -98,9 +124,6 @@ export default function BatchGenPanel({ state, config, onConfigChange, onStart, 
             <span><span className="text-emerald-500">{done}</span> generated</span>
             <span><span className="text-zinc-400">{skipped}</span> skipped</span>
             {errors > 0 && <span><span className="text-red-400">{errors}</span> errors</span>}
-            {currentFile && phase === 'running' && (
-              <span className="truncate text-zinc-700 font-mono ml-auto max-w-[240px]">{currentFile}</span>
-            )}
           </div>
         </div>
       )}
@@ -113,12 +136,15 @@ export default function BatchGenPanel({ state, config, onConfigChange, onStart, 
               <div key={i} className="flex items-center gap-2 text-xs py-0.5">
                 {entry.type === 'done' && (
                   <>
-                    <span className="text-emerald-500 w-3 flex-shrink-0">✓</span>
+                    <span className={`w-3 flex-shrink-0 ${
+                      entry.mmdb_status === 'fail' || entry.gemmi_status === 'fail' ? 'text-amber-500' : 'text-emerald-500'
+                    }`}>✓</span>
                     <span className="font-mono text-zinc-300 truncate flex-1">
                       {entry.fn.split('::').pop()}
                     </span>
-                    <span className="text-zinc-600 font-mono flex-shrink-0">
-                      {entry.has_mmdb ? 'M' : '·'}{entry.has_gemmi ? 'G' : '·'}
+                    <span className="flex gap-1.5 flex-shrink-0 font-mono text-xs">
+                      <VariantTag label="M" status={entry.mmdb_status ?? 'skip'} attempts={entry.mmdb_attempts ?? 0} />
+                      <VariantTag label="G" status={entry.gemmi_status ?? 'skip'} attempts={entry.gemmi_attempts ?? 0} />
                     </span>
                   </>
                 )}
