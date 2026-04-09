@@ -1,0 +1,19 @@
+Write a Google Test (GTest) unit test for the following C++ function using MMDB2 types.
+
+Function: `$function_name`
+MMDB symbols used: $symbols_list
+$additional_instructions
+$api_context
+
+## Source code:
+```cpp
+$source_code
+```
+
+Write a focused GTest unit test that:
+- Sets up minimal MMDB2 structures needed to call the function
+- Calls the function with realistic inputs
+- Asserts the expected outputs/side-effects
+- Uses TEST() or TEST_F() macros
+
+Output ONLY the test code inside a single ```cpp``` block.

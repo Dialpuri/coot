@@ -1,0 +1,18 @@
+A C++ GTest failed to compile or run (attempt $attempt of $max_retries). Fix it.
+
+Function: `$fn_name`  |  Variant: $variant
+
+$inc_hint
+
+## Current code:
+```cpp
+$current_code
+```
+
+## Error:
+```
+$error
+```
+
+Output ONLY the corrected test in a single ```cpp``` block.
+Include all necessary headers at the top.

@@ -1,0 +1,14 @@
+Refactor the following C++ function from MMDB2 to Gemmi.
+
+Function name: $function_name
+MMDB symbols used: $symbols_list
+$additional_instructions
+## Original MMDB code:
+```cpp
+$code
+```
+
+## Task:
+Rewrite the function above using Gemmi equivalents.
+Output only the refactored C++ code in a single ```cpp``` block.
+Do not include explanation outside the code block unless it is a brief inline comment.

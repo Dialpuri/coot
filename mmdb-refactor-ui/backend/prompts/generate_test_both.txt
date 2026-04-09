@@ -1,0 +1,38 @@
+Write TWO Google Test (GTest) unit tests for the following C++ function:
+1. An MMDB2 version (tests the current implementation)
+2. A Gemmi version (tests the future refactored implementation)
+
+Function: `$function_name`
+MMDB symbols used: $symbols_list
+$additional_instructions
+$api_context
+
+## Source code:
+```cpp
+$source_code
+```
+
+Both tests must verify the SAME logical behaviour with equivalent assertions,
+but use each library's own types and APIs for setup.
+
+Required headers for each variant:
+  MMDB test:  #include <gtest/gtest.h>  #include <mmdb2/mmdb_manager.h>
+  Gemmi test: #include <gtest/gtest.h>  #include <gemmi/structure.hpp>  #include <gemmi/model.hpp>
+
+Output EXACTLY this format — no other text:
+
+=== MMDB TEST ===
+```cpp
+// MMDB2 version
+TEST(FunctionNameTests, MMDB_Behaviour) {
+  // ...
+}
+```
+
+=== GEMMI TEST ===
+```cpp
+// Gemmi version
+TEST(FunctionNameTests, Gemmi_Behaviour) {
+  // ...
+}
+```

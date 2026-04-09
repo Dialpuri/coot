@@ -1,0 +1,18 @@
+Write a Google Test (GTest) unit test for the following C++ function AFTER it has been refactored from MMDB2 to Gemmi.
+
+Function: `$function_name`
+Original MMDB symbols: $symbols_list
+$additional_instructions
+$api_context
+
+## Original MMDB source (to be refactored):
+```cpp
+$source_code
+```
+
+Write a GTest unit test for the Gemmi-refactored version that:
+- Sets up gemmi::Structure / gemmi::Model / gemmi::Chain / gemmi::Residue / gemmi::Atom
+- Tests the SAME logical behaviour as the MMDB version would
+- Uses TEST() or TEST_F() macros
+
+Output ONLY the test code inside a single ```cpp``` block.
