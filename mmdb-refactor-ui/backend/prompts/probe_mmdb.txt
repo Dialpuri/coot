@@ -20,7 +20,7 @@ $source_code
 The probe program must:
 
 1. Contain an `int main(int, char**)` — no gtest, no TEST() macros.
-2. Load the PDB file at the path passed as argv[1] using `mmdb::Manager::ReadCoorFile`.
+2. Load the PDB file (coordinate data) from this path  `$pdb_path`.
 3. Navigate to the real model / chain / residue / atom the function needs, pulling objects out of the loaded manager — do NOT build any synthetic structures by hand.
 4. Call `$function_name` with those real inputs.
 5. Print the function's output (return value, or the observable state it mutates) to stdout, one value per line, each prefixed with `PROBE:`.
@@ -30,6 +30,8 @@ The probe program must:
    - For floats use `std::setprecision(6)`.
 6. Return 0 on success, non-zero if loading the file or calling the function fails.
 
-The probe will be compiled against the same MMDB / cootapi libraries as the regular tests, so you can `#include <mmdb2/mmdb_manager.h>` and any coot headers the function requires. Do NOT include `<gemmi/...>` headers — gemmi is not needed and must not appear anywhere in the probe source.
+The probe will be compiled against the same MMDB / cootapi libraries as the regular tests, so you can `#include <mmdb2/mmdb_manager.h>` and the function header.
+Do NOT include `<gemmi/...>` headers — gemmi is not needed and must not appear anywhere in the probe source.
 
 Output ONLY the probe source code inside a single ```cpp``` block, starting with the includes. Do not output any other text.
+Make no mistakes, be simple and concise, do not make up any function names or types or includes, use only what you know.

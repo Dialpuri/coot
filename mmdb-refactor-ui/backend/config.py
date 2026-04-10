@@ -30,7 +30,7 @@ _parser.add_argument(
 )
 _parser.add_argument(
     "--stream-llm",
-    action="store_false",
+    action="store_true",
     help="DEV: stream LLM responses in the probe pipeline so each token is "
          "visible in the console as it arrives (useful for debugging; adds a "
          "small per-chunk framing overhead but no extra compute).",

@@ -115,6 +115,89 @@ def find_header_for_source(rel_source_path: str) -> str:
     return ""
 
 
+# ── Source-file include scraping ──────────────────────────────────────────────
+#
+# Rather than relying on the AST tool to emit captured #include directives,
+# we just read the .cc file off disk and parse its include lines directly.
+# This is simpler, always up-to-date with the source tree, and needs no
+# rebuild/rescan cycle.
+
+_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*([<"][^>"]+[>"])')
+
+
+def read_source_includes(rel_source_path: str) -> list[str]:
+    """Return the list of #include directives (in order, deduplicated) that
+    appear at the top of the given source file, as raw spellings like
+    `<mmdb2/mmdb_manager.h>` or `"coot-coord-utils.hh"`.
+
+    Stops scanning as soon as we see a non-include, non-blank, non-comment
+    line that looks like real code — we only want the header block.
+    """
+    import report
+    if not rel_source_path:
+        return []
+    src = Path(report._coot_root) / rel_source_path
+    if not src.exists():
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    try:
+        with src.open("r", errors="replace") as fh:
+            in_block_comment = False
+            for raw in fh:
+                line = raw.rstrip("\n")
+                stripped = line.strip()
+                # Handle /* ... */ block comments that span lines
+                if in_block_comment:
+                    if "*/" in stripped:
+                        in_block_comment = False
+                    continue
+                if stripped.startswith("/*") and "*/" not in stripped:
+                    in_block_comment = True
+                    continue
+                if not stripped:
+                    continue
+                if stripped.startswith("//") or stripped.startswith("/*"):
+                    continue
+                # Preprocessor directives are fine to skip past
+                m = _INCLUDE_RE.match(line)
+                if m:
+                    spelling = m.group(1)
+                    if spelling not in seen:
+                        seen.add(spelling)
+                        out.append(spelling)
+                    continue
+                if stripped.startswith("#"):
+                    # other preprocessor (define, if, pragma, etc.) — keep going
+                    continue
+                # First line of real code → include block is over
+                break
+    except OSError:
+        return []
+    return out
+
+
+def _format_file_includes(rel_source_path: str) -> str:
+    """Render the source file's real #include block as a prompt section.
+
+    This tells the LLM the exact headers the original translation unit uses,
+    so it doesn't invent include paths that don't exist on disk.
+    """
+    includes = read_source_includes(rel_source_path)
+    if not includes:
+        return ""
+    block = "\n".join(f"#include {inc}" for inc in includes)
+    return (
+        "\n\n## Real includes from the source file\n\n"
+        f"The translation unit `{rel_source_path}` begins with these "
+        "`#include` directives. Use EXACTLY these spellings in your probe — "
+        "do not invent header paths, do not drop the leading directory, do "
+        "not switch `<...>` to `\"...\"` or vice versa. Copy the ones you "
+        "actually need verbatim:\n\n"
+        f"```cpp\n{block}\n```\n"
+    )
+
+
 def _format_header_include(rel_source_path: str) -> str:
     """Render a '## Where the function lives' prompt section, or empty string.
 
@@ -179,6 +262,7 @@ def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list
         gtest_style=GTEST_STYLE,
         oracle_values=_format_oracle(oracle_output),
         header_include=_format_header_include(rel_source_path),
+        file_includes=_format_file_includes(rel_source_path),
     )
     if target == "mmdb":
         return _T_TEST_MMDB.substitute(**common)
@@ -189,7 +273,7 @@ def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list
 
 def build_probe_mmdb(function_name: str, source_code: str,
                      mmdb_symbols: list[str], additional_instructions: str = "",
-                     rel_source_path: str = "") -> str:
+                     rel_source_path: str = "", pdb_path: str = "") -> str:
     """Build a prompt asking the LLM to write an MMDB probe main()."""
     return _T_PROBE_MMDB.substitute(
         function_name=function_name,
@@ -198,6 +282,8 @@ def build_probe_mmdb(function_name: str, source_code: str,
         api_context=_api_context(mmdb_symbols),
         source_code=source_code,
         header_include=_format_header_include(rel_source_path),
+        pdb_path=pdb_path,
+        # file_includes=_format_file_includes(rel_source_path),
     )
 
 

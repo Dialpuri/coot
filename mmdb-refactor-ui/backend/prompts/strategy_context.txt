@@ -15,5 +15,5 @@ Gemmi uses range-for over st.models, model.chains, chain.residues, residue.atoms
 MMDB uses NewSelection/Select/GetSelIndex/DeleteSelection with handle integers.
 Gemmi uses direct iteration with conditional filtering on chain.name, res.seqid, etc.
 
-Replace all mmdb:: types, pointer arithmetic, and selection handles with idiomatic Gemmi code.
 Prefer references over raw pointers where possible. Remove manual memory management.
+Make no mistakes. 100% correct code is required.

@@ -102,14 +102,18 @@ async def run_mmdb_oracle(
     base_prompt = build_probe_mmdb(
         function_name, source_code, mmdb_symbols, additional_instructions,
         rel_source_path=rel_source_path,
+        pdb_path=pdb
     )
     prompt = base_prompt
     last_source = ""
     last_error = ""
     yield {"type": "info", "text": f"base_prompt → {base_prompt}"}
 
-    with tempfile.TemporaryDirectory(prefix="mmdb_probe_") as tmp:
-        tmp_dir = Path(tmp)
+    prompt_path = Path("/Users/dialpuri/lmb/coot/mmdb-recon/bin/probe.txt")
+    prompt_path.write_text(base_prompt)
+    # with tempfile.TemporaryDirectory(prefix="/Users/dialpuri/lmb/coot/mmdb-recon/bin/mmdb_probe", ) as tmp:
+    if True:
+        tmp_dir = Path("/Users/dialpuri/lmb/coot/mmdb-recon/bin")
         probe_src = tmp_dir / "probe.cc"
         probe_bin = tmp_dir / "probe"
         yield {"type": "info", "text": f"probe workdir: {tmp_dir}"}

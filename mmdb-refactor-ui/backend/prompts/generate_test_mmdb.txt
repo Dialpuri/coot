@@ -5,6 +5,7 @@ MMDB symbols used: $symbols_list
 $additional_instructions
 $api_context
 $header_include
+$file_includes
 
 ## Source code:
 ```cpp
