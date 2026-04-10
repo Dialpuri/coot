@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FileDetail, FunctionRecord, Stats } from '../types'
-import { fetchSource, postProgress } from '../api'
+import { fetchSource, postProgress, previewRefactorPrompt } from '../api'
+import type { PromptPreview } from '../api'
 import { highlightCppWithLines } from '../highlight'
+import PromptModal from './PromptModal'
 
 interface Props {
   file: FileDetail | null
@@ -19,6 +21,24 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
   const [sourceLoading, setSourceLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const [promptPreview, setPromptPreview] = useState<PromptPreview | null>(null)
+  const [promptLoading, setPromptLoading] = useState(false)
+  const [promptError, setPromptError] = useState<string | null>(null)
+
+  const showPrompt = async () => {
+    if (!fn) return
+    setPromptPreview(null)
+    setPromptError(null)
+    setPromptLoading(true)
+    try {
+      const data = await previewRefactorPrompt(fn.name, sourceCode, fn.mmdb_symbols, additionalInstructions)
+      setPromptPreview(data)
+    } catch (e) {
+      setPromptError(String(e))
+    } finally {
+      setPromptLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (!file || !fn) { setSourceCode(''); setGemmiCode(''); return }
@@ -123,6 +143,15 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-zinc-950">
+      {(promptPreview !== null || promptLoading || promptError !== null) && (
+        <PromptModal
+          title="Prompt Preview — Refactor"
+          data={promptPreview}
+          loading={promptLoading}
+          error={promptError}
+          onClose={() => { setPromptPreview(null); setPromptError(null) }}
+        />
+      )}
       {/* Function header */}
       <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
         <h3 className="text-sm font-mono font-medium text-zinc-100 truncate" title={fn.name}>{fn.name}</h3>
@@ -231,6 +260,14 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
             className="btn btn-secondary"
           >
             Copy
+          </button>
+          <button
+            onClick={showPrompt}
+            disabled={!sourceCode}
+            className="btn btn-secondary"
+            title="Preview the prompt that will be sent to the LLM"
+          >
+            Preview Prompt
           </button>
           <div className="flex-1" />
           <button onClick={() => markProgress('done')} disabled={!file || !fn} className="btn btn-secondary text-emerald-400 hover:text-emerald-300">

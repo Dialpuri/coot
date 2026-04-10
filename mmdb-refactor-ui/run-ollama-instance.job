@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH --job-name=ollama
+#SBATCH --gres=gpu:1
+#SBATCH --partition=ml
+#SBATCH --time=02:00:00
+#SBATCH --output=ollama.log
+
+echo "Starting Ollama on node: $(hostname)"
+echo "Port: 11434"
+
+export OLLAMA_CONTEXT_LENGTH=192000
+/lmb/home/jdialpuri/bin/ollama serve

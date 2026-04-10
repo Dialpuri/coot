@@ -101,6 +101,38 @@ export async function writeTestFiles(
   return res.data
 }
 
+// ── Prompt preview ────────────────────────────────────────────────────────────
+
+export interface PromptPreview {
+  system: string
+  prompt: string
+}
+
+export async function previewRefactorPrompt(
+  function_name: string,
+  code: string,
+  mmdb_symbols: string[],
+  additional_instructions: string,
+): Promise<PromptPreview> {
+  const res = await axios.post<PromptPreview>(`${BASE}/preview-prompt/refactor`, {
+    function_name, code, mmdb_symbols, additional_instructions,
+  })
+  return res.data
+}
+
+export async function previewTestPrompt(
+  function_name: string,
+  source_code: string,
+  mmdb_symbols: string[],
+  target: string,
+  additional_instructions: string,
+): Promise<PromptPreview> {
+  const res = await axios.post<PromptPreview>(`${BASE}/preview-prompt/generate-test`, {
+    function_name, source_code, mmdb_symbols, target, additional_instructions,
+  })
+  return res.data
+}
+
 // ── Batch generation ──────────────────────────────────────────────────────────
 
 export type BatchEvent =

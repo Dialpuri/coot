@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { FileDetail, FunctionRecord } from '../types'
-import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles, validateAndFixTest } from '../api'
-import type { TestFilePaths } from '../api'
+import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles, validateAndFixTest, previewTestPrompt } from '../api'
+import type { TestFilePaths, PromptPreview } from '../api'
+import PromptModal from './PromptModal'
 import { useHorizontalSplit } from '../hooks/useResize'
 import { highlightCppWithLines, highlightForEditor } from '../highlight'
 import Editor from 'react-simple-code-editor'
@@ -106,6 +107,27 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
   } | null>(null)
   const [committing, setCommitting] = useState(false)
   const [validating, setValidating] = useState<false | 'mmdb' | 'gemmi'>(false)
+
+  const [promptPreview, setPromptPreview] = useState<PromptPreview | null>(null)
+  const [promptLoading, setPromptLoading] = useState(false)
+  const [promptError, setPromptError] = useState<string | null>(null)
+  const [promptTarget, setPromptTarget] = useState<'mmdb' | 'gemmi' | 'both'>('both')
+
+  const showPrompt = async (target: 'mmdb' | 'gemmi' | 'both') => {
+    if (!fn) return
+    setPromptTarget(target)
+    setPromptPreview(null)
+    setPromptError(null)
+    setPromptLoading(true)
+    try {
+      const data = await previewTestPrompt(fn.name, sourceCode, fn.mmdb_symbols, target, extraInstructions)
+      setPromptPreview(data)
+    } catch (e) {
+      setPromptError(String(e))
+    } finally {
+      setPromptLoading(false)
+    }
+  }
 
   const terminalRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -422,6 +444,15 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-zinc-950">
+      {(promptPreview !== null || promptLoading || promptError !== null) && (
+        <PromptModal
+          title={`Prompt Preview — Generate Test (${promptTarget})`}
+          data={promptPreview}
+          loading={promptLoading}
+          error={promptError}
+          onClose={() => { setPromptPreview(null); setPromptError(null) }}
+        />
+      )}
       {/* Function header */}
       <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
         <div className="flex items-start gap-3">
@@ -603,6 +634,15 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
           </button>
           <button onClick={() => generate('gemmi')} disabled={!sourceCode || !!streaming} className="btn btn-secondary">
             {streaming === 'gemmi' ? 'Stop' : 'Gemmi Only'}
+          </button>
+
+          <button
+            onClick={() => showPrompt('both')}
+            disabled={!sourceCode}
+            className="btn btn-secondary"
+            title="Preview the prompt that will be sent to the LLM"
+          >
+            Preview Prompt
           </button>
 
           <div className="flex-1" />
