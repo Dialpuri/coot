@@ -29,6 +29,9 @@ _T_TEST_GEMMI        = _load("generate_test_gemmi.txt")
 _T_TEST_BOTH         = _load("generate_test_both.txt")
 _T_FIX               = _load("fix_test.txt")
 
+# ── Style guide (injected into test prompts) ──────────────────────────────────
+GTEST_STYLE: str = (_PROMPTS_DIR / "google_test.txt").read_text()
+
 # ── MMDB docs (injected at startup via init_docs) ─────────────────────────────
 _mmdb_docs_markdown: str = ""
 
@@ -85,6 +88,7 @@ def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list
         additional_instructions=_additional(additional_instructions),
         api_context=_api_context(mmdb_symbols),
         source_code=source_code,
+        gtest_style=GTEST_STYLE,
     )
     if target == "mmdb":
         return _T_TEST_MMDB.substitute(**common)

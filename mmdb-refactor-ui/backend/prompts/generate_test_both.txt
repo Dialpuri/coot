@@ -12,8 +12,11 @@ $api_context
 $source_code
 ```
 
+$gtest_style
+
 Both tests must verify the SAME logical behaviour with equivalent assertions,
 but use each library's own types and APIs for setup.
+Do NOT construct synthetic structures by hand — load a real PDB/mmCIF file in each test.
 
 Required headers for each variant:
   MMDB test:  #include <gtest/gtest.h>  #include <mmdb2/mmdb_manager.h>

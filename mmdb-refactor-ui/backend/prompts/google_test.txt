@@ -1,0 +1,53 @@
+## Google Test Style Guide
+
+### Core principle: no mocking — use real data files
+
+Do NOT construct synthetic in-memory structures (e.g. manually building an mmdb::Manager or gemmi::Structure by hand) unless the function under test is completely trivial and requires no real molecular data.
+
+Instead, load a real PDB or mmCIF file from disk and let the library parse it. This ensures the test exercises the function against realistic, well-formed data.
+
+### Loading data
+
+MMDB variant — read a PDB/mmCIF file via the manager:
+```cpp
+mmdb::Manager mgr;
+int rc = mgr.ReadCoorFile("path/to/test.pdb");
+ASSERT_EQ(rc, mmdb::Error_NoError) << "Failed to read PDB file";
+mmdb::Model* model = mgr.GetModel(1);
+ASSERT_NE(model, nullptr);
+```
+
+Gemmi variant — read a structure file via gemmi:
+```cpp
+gemmi::Structure st = gemmi::read_structure_file("path/to/test.pdb");
+ASSERT_FALSE(st.models.empty());
+gemmi::Model& model = st.models[0];
+```
+
+The test data file path should be expressed as a compile-time constant or passed via a command-line argument / environment variable so the test is portable:
+```cpp
+static const char* TEST_PDB = TEST_DATA_DIR "/test.pdb";
+```
+
+### What the test should do
+
+1. Load the data file (assert success).
+2. Obtain the relevant sub-object (model / chain / residue / atom) that the function needs.
+3. Call the function under test with those real objects.
+4. Assert on the return value or observable side-effects using `EXPECT_*` / `ASSERT_*` macros.
+5. Do not mock any part of the molecular hierarchy — if the function needs a chain, pull a real chain out of the loaded structure.
+
+### Forbidden patterns
+
+- `MOCK_METHOD` / gmock stubs for molecular objects
+- Manually calling `mmdb::Model::AddChain`, `AddResidue`, `AddAtom` etc. to build a fake structure from scratch (unless the function itself is a constructor/builder)
+- Hardcoding atom coordinates or residue names as magic numbers when a file can provide them
+- `NiceMock`, `StrictMock`, or any mock framework header for mmdb/gemmi types
+
+### TEST naming
+
+```cpp
+TEST(FunctionNameTest, DescriptiveScenario) { ... }
+```
+
+Use one `TEST` block per logical scenario. Keep fixture classes (`TEST_F`) only when multiple tests share the same file-loading setup.

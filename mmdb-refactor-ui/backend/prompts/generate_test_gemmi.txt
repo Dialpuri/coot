@@ -10,8 +10,10 @@ $api_context
 $source_code
 ```
 
+$gtest_style
+
 Write a GTest unit test for the Gemmi-refactored version that:
-- Sets up gemmi::Structure / gemmi::Model / gemmi::Chain / gemmi::Residue / gemmi::Atom
+- Reads a real PDB or mmCIF file from disk to obtain the molecular data (do NOT construct synthetic gemmi structures by hand)
 - Tests the SAME logical behaviour as the MMDB version would
 - Uses TEST() or TEST_F() macros
 

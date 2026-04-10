@@ -10,9 +10,11 @@ $api_context
 $source_code
 ```
 
+$gtest_style
+
 Write a focused GTest unit test that:
-- Sets up minimal MMDB2 structures needed to call the function
-- Calls the function with realistic inputs
+- Reads a real PDB or mmCIF file from disk to obtain the molecular data needed by the function (do NOT construct synthetic mmdb structures by hand)
+- Calls the function with the real objects obtained from that file
 - Asserts the expected outputs/side-effects
 - Uses TEST() or TEST_F() macros
 
