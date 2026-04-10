@@ -10,6 +10,7 @@
   "dependencies": {
     "@types/prismjs": "^1.26.6",
     "axios": "^1.6.7",
+    "n": "^10.2.0",
     "prismjs": "^1.30.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

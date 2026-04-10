@@ -4,7 +4,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Starting MMDB Refactor Manager..."
-echo ""
+echo "SCRIPT_DIR=${SCRIPT_DIR}"
+
+echo "Sourcing Python virtualenv"
+source .venv/bin/activate
 
 # Start backend in background
 echo "Installing backend dependencies..."
