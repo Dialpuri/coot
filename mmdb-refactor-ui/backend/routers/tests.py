@@ -15,6 +15,7 @@ from models import (
     CompileRunRequest, GitCommitRequest, GenerateAllRequest, ValidateFixRequest,
 )
 from ollama import call_ollama
+from oracle import run_mmdb_oracle
 from prompts import (
     STRATEGY_CONTEXT, build_generate_test, build_fix,
     parse_both_sections, strip_fences,
@@ -80,35 +81,105 @@ def load_test_for_function(
 
 @router.post("/api/generate-test")
 async def generate_test(req: GenerateTestRequest):
-    prompt = build_generate_test(
-        req.function_name, req.source_code, req.mmdb_symbols,
-        req.target, req.additional_instructions,
-    )
-    payload = {
-        "model":  req.model,
-        "system": STRATEGY_CONTEXT,
-        "prompt": prompt,
-        "stream": True,
-    }
+    """
+    Generate a test. For MMDB-involving targets, first run an oracle probe:
+    a small main() the LLM writes that calls the real function on a real PDB
+    file and prints its output. The captured output is injected into the
+    test-generation prompt as ground-truth values.
 
-    async def stream_ollama():
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            async with client.stream("POST", OLLAMA_URL, json=payload) as response:
-                if response.status_code != 200:
-                    body = await response.aread()
-                    yield f"Error from Ollama ({response.status_code}): {body.decode()}"
-                    return
-                async for line in response.aiter_lines():
-                    if line.strip():
+    Streams NDJSON so the frontend can show probe progress AND the final
+    token-by-token test code.
+
+    Event types:
+      oracle_start | oracle_event  | oracle_done | oracle_skip
+      test_start   | test_chunk    | test_done
+      error
+
+    `oracle_event` wraps the detailed step events emitted by `run_mmdb_oracle`
+    (llm_call, llm_response, compile_cmd, compile_out, run_cmd, run_out, retry,
+    info) so the frontend can show them in the terminal.
+    """
+    run_oracle = req.target in ("mmdb", "both")
+
+    async def stream_events():
+        oracle_output = ""
+
+        if run_oracle:
+            yield json.dumps({"type": "oracle_start"}) + "\n"
+            result = None
+            try:
+                async for evt in run_mmdb_oracle(
+                    model=req.model,
+                    function_name=req.function_name,
+                    source_code=req.source_code,
+                    mmdb_symbols=req.mmdb_symbols,
+                    additional_instructions=req.additional_instructions,
+                    rel_source_path=req.rel_source_path,
+                ):
+                    if evt.get("type") == "done":
+                        result = evt["result"]
+                        continue
+                    yield json.dumps({"type": "oracle_event", "event": evt}) + "\n"
+            except Exception as ex:
+                yield json.dumps({
+                    "type": "oracle_skip",
+                    "reason": f"oracle crashed: {ex}",
+                }) + "\n"
+
+            if result is not None:
+                yield json.dumps({
+                    "type": "oracle_done",
+                    "ok": result.ok,
+                    "stage": result.stage,
+                    "attempts": result.attempts,
+                    "probe_lines": result.probe_lines,
+                    "raw": result.raw_stdout[:4000],
+                    "probe_source": result.probe_source,
+                }) + "\n"
+                if result.ok:
+                    oracle_output = "\n".join(result.probe_lines)
+
+        prompt = build_generate_test(
+            req.function_name, req.source_code, req.mmdb_symbols,
+            req.target, req.additional_instructions,
+            oracle_output=oracle_output,
+            rel_source_path=req.rel_source_path,
+        )
+
+        yield json.dumps({"type": "test_start"}) + "\n"
+        payload = {
+            "model":  req.model,
+            "system": STRATEGY_CONTEXT,
+            "prompt": prompt,
+            "stream": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                async with client.stream("POST", OLLAMA_URL, json=payload) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        yield json.dumps({
+                            "type": "error",
+                            "message": f"Ollama {response.status_code}: {body.decode()[:500]}",
+                        }) + "\n"
+                        return
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
                         try:
                             data = json.loads(line)
-                            chunk = data.get("response", "")
-                            if chunk:
-                                yield chunk
                         except json.JSONDecodeError:
-                            pass
+                            continue
+                        chunk = data.get("response", "")
+                        if chunk:
+                            yield json.dumps({"type": "test_chunk", "text": chunk}) + "\n"
+        except Exception as ex:
+            yield json.dumps({"type": "error", "message": str(ex)}) + "\n"
+            return
 
-    return StreamingResponse(stream_ollama(), media_type="text/plain")
+        yield json.dumps({"type": "test_done"}) + "\n"
+
+    return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
 
 # ── File paths / write / compile-run ─────────────────────────────────────────
@@ -347,8 +418,44 @@ async def generate_all_tests(req: GenerateAllRequest):
                     all_lines = f.readlines()
                 source = "".join(all_lines[max(0, fn_line - 1):min(len(all_lines), fn_end)])
 
-                prompt  = build_generate_test(fn_name, source, fn.get("mmdb_symbols", []),
-                                              "both", req.additional_instructions)
+                mmdb_syms = fn.get("mmdb_symbols", [])
+                oracle_out = ""
+                probe = None
+                try:
+                    async for evt in run_mmdb_oracle(
+                        model=req.model,
+                        function_name=fn_name,
+                        source_code=source,
+                        mmdb_symbols=mmdb_syms,
+                        additional_instructions=req.additional_instructions,
+                        rel_source_path=rel_path,
+                    ):
+                        if evt.get("type") == "done":
+                            probe = evt["result"]
+                            continue
+                        yield json.dumps({
+                            "type": "oracle_event", "key": key, "fn": fn_name,
+                            "file": rel_path, "event": evt,
+                        }) + "\n"
+                    if probe and probe.ok:
+                        oracle_out = "\n".join(probe.probe_lines)
+                    yield json.dumps({
+                        "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
+                        "ok": bool(probe and probe.ok),
+                        "stage": probe.stage if probe else "none",
+                        "attempts": probe.attempts if probe else 0,
+                        "lines": (probe.probe_lines[:50] if probe else []),
+                    }) + "\n"
+                except Exception as ex:
+                    yield json.dumps({
+                        "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
+                        "ok": False, "stage": "crash", "error": str(ex),
+                    }) + "\n"
+
+                prompt  = build_generate_test(fn_name, source, mmdb_syms,
+                                              "both", req.additional_instructions,
+                                              oracle_output=oracle_out,
+                                              rel_source_path=rel_path)
                 raw     = await call_ollama(req.model, prompt)
                 mmdb_raw, gemmi_raw = parse_both_sections(raw)
                 initial = {"mmdb": strip_fences(mmdb_raw), "gemmi": strip_fences(gemmi_raw)}

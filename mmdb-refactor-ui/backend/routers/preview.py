@@ -20,6 +20,7 @@ class PreviewTestRequest(BaseModel):
     mmdb_symbols: list[str]
     target: str = "both"   # "mmdb" | "gemmi" | "both"
     additional_instructions: str = ""
+    rel_source_path: str = ""
 
 
 @router.post("/api/preview-prompt/refactor")
@@ -36,5 +37,6 @@ def preview_test_prompt(req: PreviewTestRequest):
     return {
         "system": STRATEGY_CONTEXT,
         "prompt": build_generate_test(req.function_name, req.source_code, req.mmdb_symbols,
-                                      req.target, req.additional_instructions),
+                                      req.target, req.additional_instructions,
+                                      rel_source_path=req.rel_source_path),
     }

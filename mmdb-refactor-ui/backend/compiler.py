@@ -1,15 +1,27 @@
 """Async helpers for compiling and running GTest binaries."""
 import asyncio
+import re
 from pathlib import Path
 
 import report
-from config import args, COOT_API_DIR, COOT_API_NAME, MMDB_API_DIR, MMDB_API_NAME, GTEST_FLAGS
+from config import args, COOT_API_DIR, COOT_API_NAME, MMDB_API_DIR, MMDB_API_NAME, GTEST_FLAGS, GEMMI_INCLUDE_DIR
 
 
 def make_compile_cmd(test_file: Path, output_bin: Path) -> str:
     return (
         f'{args.cxx} -std=c++17 "{test_file}" -o "{output_bin}" '
         f'{GTEST_FLAGS} -I"{report._coot_root}" -pthread '
+        f'-Wl,-rpath,{COOT_API_DIR} -L {COOT_API_DIR} -L {MMDB_API_DIR} '
+        f'-l{COOT_API_NAME} -l {MMDB_API_NAME}'
+    )
+
+
+def make_probe_compile_cmd(probe_file: Path, output_bin: Path) -> str:
+    """Like make_compile_cmd but omits gtest_main so the probe's own main() links."""
+    probe_flags = re.sub(r'(^|\s)-lgtest_main(\s|$)', ' ', GTEST_FLAGS).strip()
+    return (
+        f'{args.cxx} -std=c++17 "{probe_file}" -o "{output_bin}" '
+        f'{probe_flags} -I"{report._coot_root}" -I"{GEMMI_INCLUDE_DIR}" -pthread '
         f'-Wl,-rpath,{COOT_API_DIR} -L {COOT_API_DIR} -L {MMDB_API_DIR} '
         f'-l{COOT_API_NAME} -l {MMDB_API_NAME}'
     )

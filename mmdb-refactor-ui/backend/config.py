@@ -23,6 +23,18 @@ _parser.add_argument(
     default="/Users/dialpuri/lmb/coot/mmdb-recon/llm/mmdb_methods.md",
     help="Path to the mmdb_methods.md file produced by document_methods.py",
 )
+_parser.add_argument(
+    "--probe-pdb",
+    default="/Users/dialpuri/lmb/coot/reference-structures/1c7k.pdb",
+    help="Path to a real PDB file used by oracle probes to measure function output",
+)
+_parser.add_argument(
+    "--stream-llm",
+    action="store_false",
+    help="DEV: stream LLM responses in the probe pipeline so each token is "
+         "visible in the console as it arrives (useful for debugging; adds a "
+         "small per-chunk framing overhead but no extra compute).",
+)
 args, _ = _parser.parse_known_args()
 
 # ── Paths & URLs ──────────────────────────────────────────────────────────────
@@ -36,8 +48,12 @@ COOT_API_DIR  = "/Users/dialpuri/lmb/build-coot-and-deps/"
 COOT_API_NAME = "cootapi"
 MMDB_API_DIR  = "/opt/homebrew/Cellar/mmdb2/2.0.22/lib"
 MMDB_API_NAME = "mmdb2"
+GEMMI_INCLUDE_DIR = "/opt/homebrew/opt/gemmi/include/"
 
-MAX_TEST_RETRIES = 5
+MAX_TEST_RETRIES  = 5
+PROBE_PDB_PATH    = args.probe_pdb
+MAX_PROBE_RETRIES = 3
+DEV_STREAM_LLM    = args.stream_llm
 
 # ── GTest detection ───────────────────────────────────────────────────────────
 def _detect_gtest_flags() -> str:

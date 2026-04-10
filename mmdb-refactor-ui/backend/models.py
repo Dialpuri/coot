@@ -30,6 +30,7 @@ class GenerateTestRequest(BaseModel):
     target: str = "both"   # "mmdb" | "gemmi" | "both"
     model: str = "gemma4"
     additional_instructions: str = ""
+    rel_source_path: str = ""   # e.g. "coot-utils/coot-coord-utils.cc" — used to resolve the real header
 
 
 class WriteTestRequest(BaseModel):

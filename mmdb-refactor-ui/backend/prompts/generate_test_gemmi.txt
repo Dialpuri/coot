@@ -4,6 +4,7 @@ Function: `$function_name`
 Original MMDB symbols: $symbols_list
 $additional_instructions
 $api_context
+$header_include
 
 ## Original MMDB source (to be refactored):
 ```cpp
@@ -11,6 +12,7 @@ $source_code
 ```
 
 $gtest_style
+$oracle_values
 
 Write a GTest unit test for the Gemmi-refactored version that:
 - Reads a real PDB or mmCIF file from disk to obtain the molecular data (do NOT construct synthetic gemmi structures by hand)

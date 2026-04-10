@@ -29,19 +29,46 @@ The test data file path should be expressed as a compile-time constant or passed
 static const char* TEST_PDB = TEST_DATA_DIR "/test.pdb";
 ```
 
+### Establishing expected values: run MMDB first as the oracle
+
+Do NOT guess or hardcode expected output values. Instead, call the original MMDB function on the real data to obtain the ground-truth result, then assert that the Gemmi-refactored function produces the same result.
+
+Pattern for a function that returns a value:
+```cpp
+// 1. Run MMDB version — this is the oracle
+mmdb::Manager mgr;
+ASSERT_EQ(mgr.ReadCoorFile(TEST_PDB), mmdb::Error_NoError);
+auto expected = mmdb_version_of_function(mgr.GetModel(1), ...);
+
+// 2. Run Gemmi version — must match
+gemmi::Structure st = gemmi::read_structure_file(TEST_PDB);
+auto actual = gemmi_version_of_function(st.models[0], ...);
+
+EXPECT_EQ(actual, expected);
+```
+
+Pattern for a function that modifies a structure in-place:
+```cpp
+// Run MMDB, capture observable state after the call
+// Run Gemmi, assert the same observable state
+```
+
+This oracle pattern means the test assertions are always derived from real execution, not from the test author's assumptions.
+
 ### What the test should do
 
 1. Load the data file (assert success).
 2. Obtain the relevant sub-object (model / chain / residue / atom) that the function needs.
-3. Call the function under test with those real objects.
-4. Assert on the return value or observable side-effects using `EXPECT_*` / `ASSERT_*` macros.
-5. Do not mock any part of the molecular hierarchy — if the function needs a chain, pull a real chain out of the loaded structure.
+3. Call the MMDB version of the function to get the ground-truth output.
+4. Call the Gemmi version of the function with equivalent inputs.
+5. Assert the Gemmi output matches the MMDB oracle using `EXPECT_*` / `ASSERT_*` macros.
+6. Do not mock any part of the molecular hierarchy — if the function needs a chain, pull a real chain out of the loaded structure.
 
 ### Forbidden patterns
 
 - `MOCK_METHOD` / gmock stubs for molecular objects
 - Manually calling `mmdb::Model::AddChain`, `AddResidue`, `AddAtom` etc. to build a fake structure from scratch (unless the function itself is a constructor/builder)
-- Hardcoding atom coordinates or residue names as magic numbers when a file can provide them
+- Hardcoding atom coordinates, residue names, or expected return values as magic numbers — derive them by running the MMDB function
 - `NiceMock`, `StrictMock`, or any mock framework header for mmdb/gemmi types
 
 ### TEST naming

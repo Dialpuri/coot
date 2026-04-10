@@ -30,6 +30,55 @@ function stripOuterFences(code: string): string {
   return fenced ? fenced[1] : code
 }
 
+function indent(text: string, prefix = '  '): string {
+  return text.split('\n').map(l => prefix + l).join('\n')
+}
+
+function formatOracleEvent(evt: { type: string; [k: string]: unknown }): string {
+  const t = evt.type
+  if (t === 'info') {
+    return `[ORACLE] ${evt.text as string}\n`
+  }
+  if (t === 'llm_call') {
+    const streaming = evt.streaming ? '  (streaming)' : ''
+    return `[ORACLE] Ollama call → model=${evt.model as string}  attempt=${evt.attempt as number}/${evt.max as number}  prompt=${evt.prompt_chars as number} chars${streaming}\n`
+  }
+  if (t === 'llm_chunk') {
+    // Raw token stream — no decoration so the probe source appears contiguously.
+    return evt.text as string
+  }
+  if (t === 'llm_response') {
+    const streamed = (evt as { _already_streamed?: boolean })._already_streamed
+    const src = (evt.source as string) || ''
+    const summary = `\n[ORACLE] Ollama replied in ${evt.elapsed_s as number}s  (${evt.source_chars as number} chars)\n`
+    if (streamed) return summary  // source is already in the terminal from llm_chunk
+    return summary + `--- probe source ---\n${indent(src)}\n--- end probe source ---\n`
+  }
+  if (t === 'compile_cmd') {
+    return `[ORACLE COMPILE] ${evt.cmd as string}\n`
+  }
+  if (t === 'compile_out') {
+    const ok = evt.ok as boolean
+    const text = ((evt.text as string) || '').trimEnd()
+    const head = `[ORACLE COMPILE ${ok ? 'OK' : 'FAILED'}]  ${evt.elapsed_s as number}s\n`
+    return text ? head + indent(text) + '\n' : head
+  }
+  if (t === 'run_cmd') {
+    return `[ORACLE RUN] ${evt.cmd as string}\n`
+  }
+  if (t === 'run_out') {
+    const ok = evt.ok as boolean
+    const text = ((evt.text as string) || '').trimEnd()
+    const lines = (evt.probe_lines as string[]) || []
+    return `[ORACLE RUN ${ok ? 'OK' : 'FAILED'}]  ${evt.elapsed_s as number}s  (${lines.length} PROBE lines)\n` +
+           (text ? indent(text) + '\n' : '')
+  }
+  if (t === 'retry') {
+    return `[ORACLE RETRY] attempt ${evt.attempt as number} failed: ${evt.reason as string}\n`
+  }
+  return `[ORACLE] ${t} ${JSON.stringify(evt)}\n`
+}
+
 function TestEditor({
   label,
   value,
@@ -88,7 +137,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
   const [gemmiTest, setGemmiTest] = useState('')
   const [notes, setNotes] = useState('')
   const [testStatus, setTestStatus] = useState<'draft' | 'reviewed' | 'done'>('draft')
-  const [model, setModel] = useState('llama3.2')
+  const [model, setModel] = useState('gemma4')
   const [extraInstructions, setExtraInstructions] = useState('')
   const [streaming, setStreaming] = useState<false | 'mmdb' | 'gemmi' | 'both'>(false)
   const [error, setError] = useState<string | null>(null)
@@ -120,7 +169,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
     setPromptError(null)
     setPromptLoading(true)
     try {
-      const data = await previewTestPrompt(fn.name, sourceCode, fn.mmdb_symbols, target, extraInstructions)
+      const data = await previewTestPrompt(fn.name, sourceCode, fn.mmdb_symbols, target, extraInstructions, file?.rel_path ?? '')
       setPromptPreview(data)
     } catch (e) {
       setPromptError(String(e))
@@ -190,6 +239,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
         body: JSON.stringify({
           function_name: fn.name, source_code: sourceCode, mmdb_symbols: fn.mmdb_symbols,
           target, model, additional_instructions: extraInstructions,
+          rel_source_path: file.rel_path,
         }),
         signal: abortRef.current.signal,
       })
@@ -198,12 +248,10 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      let accumulated = ''
+      let buffer = ''       // raw ndjson buffer
+      let accumulated = ''  // assembled test_chunk text
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        accumulated += decoder.decode(value, { stream: true })
+      const applyAccumulated = () => {
         if (target === 'both') {
           const { mmdb, gemmi } = parseBothSections(accumulated)
           setMmdbTest(stripOuterFences(mmdb))
@@ -212,6 +260,70 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
           setMmdbTest(stripOuterFences(accumulated))
         } else {
           setGemmiTest(stripOuterFences(accumulated))
+        }
+      }
+
+      // Track whether we've seen llm_chunk events for the current attempt so
+      // the following llm_response can skip re-dumping the already-visible source.
+      let streamedThisAttempt = false
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let nl: number
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim()
+          buffer = buffer.slice(nl + 1)
+          if (!line) continue
+          let evt: { type: string; [k: string]: unknown }
+          try { evt = JSON.parse(line) } catch { continue }
+          switch (evt.type) {
+            case 'oracle_start':
+              setShowTerminal(true)
+              setTerminal(prev => prev + '\n[ORACLE] Starting probe pipeline on real PDB file…\n')
+              streamedThisAttempt = false
+              break
+            case 'oracle_event': {
+              const inner = (evt.event as { type: string; [k: string]: unknown }) || { type: '' }
+              if (inner.type === 'llm_call') {
+                streamedThisAttempt = false
+              } else if (inner.type === 'llm_chunk') {
+                streamedThisAttempt = true
+              } else if (inner.type === 'llm_response' && streamedThisAttempt) {
+                ;(inner as { _already_streamed?: boolean })._already_streamed = true
+              }
+              setTerminal(prev => prev + formatOracleEvent(inner))
+              break
+            }
+            case 'oracle_done': {
+              const ok = evt.ok as boolean
+              const stage = evt.stage as string
+              const attempts = evt.attempts as number
+              const lines = (evt.probe_lines as string[]) || []
+              if (ok) {
+                setTerminal(prev => prev + `[ORACLE OK] ${attempts} attempt(s), ${lines.length} probe line(s):\n` +
+                  lines.map(l => `  ${l}\n`).join(''))
+              } else {
+                setTerminal(prev => prev + `[ORACLE FAILED] stage=${stage} after ${attempts} attempt(s) — falling back to unconstrained generation\n`)
+              }
+              break
+            }
+            case 'oracle_skip':
+              setTerminal(prev => prev + `[ORACLE SKIP] ${evt.reason as string}\n`)
+              break
+            case 'test_start':
+              setTerminal(prev => prev + '[GENERATE] Streaming test code…\n')
+              break
+            case 'test_chunk':
+              accumulated += (evt.text as string)
+              applyAccumulated()
+              break
+            case 'test_done':
+              break
+            case 'error':
+              throw new Error(evt.message as string)
+          }
         }
       }
 

@@ -15,7 +15,7 @@ interface Props {
 export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Props) {
   const [sourceCode, setSourceCode] = useState<string>('')
   const [gemmiCode, setGemmiCode] = useState<string>('')
-  const [model, setModel] = useState('llama3.2')
+  const [model, setModel] = useState('gemma4')
   const [additionalInstructions, setAdditionalInstructions] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [sourceLoading, setSourceLoading] = useState(false)

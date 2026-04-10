@@ -126,9 +126,10 @@ export async function previewTestPrompt(
   mmdb_symbols: string[],
   target: string,
   additional_instructions: string,
+  rel_source_path = '',
 ): Promise<PromptPreview> {
   const res = await axios.post<PromptPreview>(`${BASE}/preview-prompt/generate-test`, {
-    function_name, source_code, mmdb_symbols, target, additional_instructions,
+    function_name, source_code, mmdb_symbols, target, additional_instructions, rel_source_path,
   })
   return res.data
 }

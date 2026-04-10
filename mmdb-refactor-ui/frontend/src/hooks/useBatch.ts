@@ -44,7 +44,7 @@ export function useBatch(onFinish: () => void) {
   useEffect(() => { onFinishRef.current = onFinish }, [onFinish])
 
   const [config, setConfig] = useState<BatchConfig>({
-    model: 'llama3.2',
+    model: 'gemma4',
     skipExisting: true,
     extraInstructions: '',
   })

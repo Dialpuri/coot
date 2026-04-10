@@ -7,7 +7,7 @@ echo "Starting MMDB Refactor Manager..."
 echo "SCRIPT_DIR=${SCRIPT_DIR}"
 
 echo "Sourcing Python virtualenv"
-source .venv/bin/activate
+#source .venv/bin/activate
 
 # Start backend in background
 echo "Installing backend dependencies..."

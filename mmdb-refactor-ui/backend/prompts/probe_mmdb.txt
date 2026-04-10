@@ -1,0 +1,35 @@
+Write a minimal C++ "probe" program that runs the EXISTING, UNMODIFIED MMDB2 version of the following function on a real PDB file and prints its output to stdout.
+
+This is NOT a refactor. Do not port the function to Gemmi. Do not output any
+`gemmi::` types, `#include <gemmi/...>` headers, or Gemmi helpers. The probe
+must include the function's real header and call the original MMDB function
+directly — its job is purely to observe and print what the existing function
+returns, so we can use those values as the ground truth when writing tests.
+
+Function: `$function_name`
+MMDB symbols used: $symbols_list
+$additional_instructions
+$api_context
+$header_include
+
+## Source code:
+```cpp
+$source_code
+```
+
+The probe program must:
+
+1. Contain an `int main(int, char**)` — no gtest, no TEST() macros.
+2. Load the PDB file at the path passed as argv[1] using `mmdb::Manager::ReadCoorFile`.
+3. Navigate to the real model / chain / residue / atom the function needs, pulling objects out of the loaded manager — do NOT build any synthetic structures by hand.
+4. Call `$function_name` with those real inputs.
+5. Print the function's output (return value, or the observable state it mutates) to stdout, one value per line, each prefixed with `PROBE:`.
+   - Example: `std::cout << "PROBE: return_value=" << result << std::endl;`
+   - For vectors/lists, print the size and then each element: `PROBE: size=3` then `PROBE: elem[0]=...`.
+   - For structs, print each field on its own PROBE line: `PROBE: field_name=value`.
+   - For floats use `std::setprecision(6)`.
+6. Return 0 on success, non-zero if loading the file or calling the function fails.
+
+The probe will be compiled against the same MMDB / cootapi libraries as the regular tests, so you can `#include <mmdb2/mmdb_manager.h>` and any coot headers the function requires. Do NOT include `<gemmi/...>` headers — gemmi is not needed and must not appear anywhere in the probe source.
+
+Output ONLY the probe source code inside a single ```cpp``` block, starting with the includes. Do not output any other text.

@@ -4,6 +4,7 @@ Function: `$function_name`
 MMDB symbols used: $symbols_list
 $additional_instructions
 $api_context
+$header_include
 
 ## Source code:
 ```cpp
@@ -11,11 +12,12 @@ $source_code
 ```
 
 $gtest_style
+$oracle_values
 
 Write a focused GTest unit test that:
 - Reads a real PDB or mmCIF file from disk to obtain the molecular data needed by the function (do NOT construct synthetic mmdb structures by hand)
 - Calls the function with the real objects obtained from that file
-- Asserts the expected outputs/side-effects
+- Asserts the function produces exactly the measured output shown above using `EXPECT_EQ` / `EXPECT_NEAR` / `EXPECT_STREQ`
 - Uses TEST() or TEST_F() macros
 
 Output ONLY the test code inside a single ```cpp``` block.

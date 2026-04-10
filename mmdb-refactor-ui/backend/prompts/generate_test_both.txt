@@ -6,6 +6,7 @@ Function: `$function_name`
 MMDB symbols used: $symbols_list
 $additional_instructions
 $api_context
+$header_include
 
 ## Source code:
 ```cpp
@@ -13,10 +14,11 @@ $source_code
 ```
 
 $gtest_style
+$oracle_values
 
-Both tests must verify the SAME logical behaviour with equivalent assertions,
-but use each library's own types and APIs for setup.
-Do NOT construct synthetic structures by hand — load a real PDB/mmCIF file in each test.
+The MMDB test runs the function on real PDB data and captures its output — this is the oracle.
+The Gemmi test loads the same PDB file, calls the refactored function, and asserts its output matches the MMDB oracle.
+Do NOT hardcode expected values; derive them by running the MMDB function at test runtime.
 
 Required headers for each variant:
   MMDB test:  #include <gtest/gtest.h>  #include <mmdb2/mmdb_manager.h>
