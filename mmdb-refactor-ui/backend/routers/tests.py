@@ -1,29 +1,62 @@
-"""Endpoints: /api/tests/*, /api/generate-test"""
+"""
+HTTP endpoints for the test workflow.
+
+The data flow is:
+
+    GET  /api/tests                  → list all stored test records
+    POST /api/tests                  → save a single record
+    GET  /api/tests/load             → fetch one record (falls back to disk)
+    GET  /api/tests/file-paths       → resolve where a test would be written
+    POST /api/tests/write            → write a test .cc file to disk
+    POST /api/tests/compile-run      → write + compile + run, stream all output
+    POST /api/tests/git-commit       → git add + commit a test file
+    POST /api/tests/validate-fix     → compile/run with auto-fix retries
+    POST /api/tests/generate-all     → batch: oracle → generate → fix for every fn
+
+    POST /api/generate-test          → single function: oracle → stream test code
+
+The interesting endpoints (`/api/generate-test`, `/api/tests/validate-fix`,
+`/api/tests/generate-all`) all delegate to the helpers in `pipeline.py`, so
+the actual oracle/llm/compile/fix logic lives in one place.
+"""
+import asyncio
 import json
 import os
-
-import httpx
-from fastapi import APIRouter, Query
-from fastapi.responses import StreamingResponse
 from pathlib import Path
 
+from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
+
 import report
-from compiler import compile_test, run_test, make_compile_cmd
-from config import OLLAMA_URL, MAX_TEST_RETRIES, args
+from compiler import make_compile_cmd
+from config import MAX_TEST_RETRIES, PROBE_PDB_PATH, args
 from models import (
-    TestRecord, GenerateTestRequest, WriteTestRequest,
-    CompileRunRequest, GitCommitRequest, GenerateAllRequest, ValidateFixRequest,
+    CompileRunRequest,
+    GenerateAllRequest,
+    GenerateTestRequest,
+    GitCommitRequest,
+    TestRecord,
+    ValidateFixRequest,
+    WriteTestRequest,
 )
 from ollama import call_ollama
-from oracle import run_mmdb_oracle
-from prompts import (
-    STRATEGY_CONTEXT, build_generate_test, build_fix,
-    parse_both_sections, strip_fences,
+from pipeline import (
+    compile_run_fix_loop,
+    oracle_output_text,
+    oracle_probe_source,
+    run_oracle_for_function,
+    stream_test_generation,
 )
+from prompts import build_generate_test, parse_both_sections, strip_fences
 from storage import load_tests, save_tests
 from test_utils import get_test_file_path, wrap_test_content
 
 router = APIRouter()
+
+
+def _ndjson(event: dict) -> str:
+    """Encode an event as one NDJSON line."""
+    return json.dumps(event) + "\n"
 
 
 # ── Basic CRUD ────────────────────────────────────────────────────────────────
@@ -52,7 +85,7 @@ def load_test_for_function(
     fn_name: str = Query(...),
     fn_line: int = Query(...),
 ):
-    """Return the test record for a specific function, falling back to .cc files on disk."""
+    """Return the stored record for a function, falling back to .cc files on disk."""
     key = f"{rel_source_path}::{fn_name}:{fn_line}"
     record = load_tests().get(key, {})
 
@@ -77,107 +110,63 @@ def load_test_for_function(
     }
 
 
-# ── Generate (streaming) ──────────────────────────────────────────────────────
+# ── Generate (single function, streaming) ────────────────────────────────────
 
 @router.post("/api/generate-test")
 async def generate_test(req: GenerateTestRequest):
-    """
-    Generate a test. For MMDB-involving targets, first run an oracle probe:
-    a small main() the LLM writes that calls the real function on a real PDB
-    file and prints its output. The captured output is injected into the
-    test-generation prompt as ground-truth values.
+    """Generate a test for one function.
 
-    Streams NDJSON so the frontend can show probe progress AND the final
-    token-by-token test code.
+    For MMDB-involving targets we first run an oracle probe to capture the
+    function's real output on a real PDB file, then feed those measured
+    values into the test-generation prompt as expected values. The endpoint
+    streams NDJSON so the frontend can show probe progress AND the LLM's
+    thinking + token-by-token test code.
 
     Event types:
-      oracle_start | oracle_event  | oracle_done | oracle_skip
-      test_start   | test_chunk    | test_done
-      error
-
-    `oracle_event` wraps the detailed step events emitted by `run_mmdb_oracle`
-    (llm_call, llm_response, compile_cmd, compile_out, run_cmd, run_out, retry,
-    info) so the frontend can show them in the terminal.
+        oracle_start | oracle_event | oracle_done | oracle_skip
+        test_start   | test_thinking | test_chunk | test_done
+        error
     """
     run_oracle = req.target in ("mmdb", "both")
 
     async def stream_events():
-        oracle_output = ""
+        oracle_result = None
 
+        # ── Phase 1: oracle probe (optional) ─────────────────────────────
         if run_oracle:
-            yield json.dumps({"type": "oracle_start"}) + "\n"
-            result = None
-            try:
-                async for evt in run_mmdb_oracle(
-                    model=req.model,
-                    function_name=req.function_name,
-                    source_code=req.source_code,
-                    mmdb_symbols=req.mmdb_symbols,
-                    additional_instructions=req.additional_instructions,
-                    rel_source_path=req.rel_source_path,
-                ):
-                    if evt.get("type") == "done":
-                        result = evt["result"]
-                        continue
-                    yield json.dumps({"type": "oracle_event", "event": evt}) + "\n"
-            except Exception as ex:
-                yield json.dumps({
-                    "type": "oracle_skip",
-                    "reason": f"oracle crashed: {ex}",
-                }) + "\n"
+            async for evt in run_oracle_for_function(
+                model=req.model,
+                function_name=req.function_name,
+                source_code=req.source_code,
+                mmdb_symbols=req.mmdb_symbols,
+                additional_instructions=req.additional_instructions,
+                rel_source_path=req.rel_source_path,
+            ):
+                if evt["type"] == "pipeline_result":
+                    oracle_result = evt["result"]
+                    continue
+                yield _ndjson(evt)
 
-            if result is not None:
-                yield json.dumps({
-                    "type": "oracle_done",
-                    "ok": result.ok,
-                    "stage": result.stage,
-                    "attempts": result.attempts,
-                    "probe_lines": result.probe_lines,
-                    "raw": result.raw_stdout[:4000],
-                    "probe_source": result.probe_source,
-                }) + "\n"
-                if result.ok:
-                    oracle_output = "\n".join(result.probe_lines)
-
-        prompt = build_generate_test(
-            req.function_name, req.source_code, req.mmdb_symbols,
-            req.target, req.additional_instructions,
-            oracle_output=oracle_output,
+        # ── Phase 2: stream the generated test code ──────────────────────
+        async for evt in stream_test_generation(
+            model=req.model,
+            function_name=req.function_name,
+            source_code=req.source_code,
+            mmdb_symbols=req.mmdb_symbols,
+            target=req.target,
+            additional_instructions=req.additional_instructions,
+            oracle_output=oracle_output_text(oracle_result),
             rel_source_path=req.rel_source_path,
-        )
-
-        yield json.dumps({"type": "test_start"}) + "\n"
-        payload = {
-            "model":  req.model,
-            "system": STRATEGY_CONTEXT,
-            "prompt": prompt,
-            "stream": True,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                async with client.stream("POST", OLLAMA_URL, json=payload) as response:
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        yield json.dumps({
-                            "type": "error",
-                            "message": f"Ollama {response.status_code}: {body.decode()[:500]}",
-                        }) + "\n"
-                        return
-                    async for line in response.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            data = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        chunk = data.get("response", "")
-                        if chunk:
-                            yield json.dumps({"type": "test_chunk", "text": chunk}) + "\n"
-        except Exception as ex:
-            yield json.dumps({"type": "error", "message": str(ex)}) + "\n"
-            return
-
-        yield json.dumps({"type": "test_done"}) + "\n"
+            probe_source=oracle_probe_source(oracle_result),
+            probe_pdb_path=PROBE_PDB_PATH,
+        ):
+            # `test_done` carries the full assembled text — drop it from the
+            # wire to keep the existing client contract (it already accumulated
+            # the chunks itself).
+            if evt["type"] == "test_done":
+                yield _ndjson({"type": "test_done"})
+                continue
+            yield _ndjson(evt)
 
     return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
@@ -190,9 +179,9 @@ def get_test_file_paths(rel_source_path: str = Query(...), fn_name: str = Query(
     mmdb_path  = get_test_file_path(rel_source_path, fn_name, "mmdb")
     gemmi_path = get_test_file_path(rel_source_path, fn_name, "gemmi")
     return {
-        "mmdb":        str(mmdb_path.relative_to(report._coot_root)),
-        "gemmi":       str(gemmi_path.relative_to(report._coot_root)),
-        "mmdb_exists": mmdb_path.exists(),
+        "mmdb":         str(mmdb_path.relative_to(report._coot_root)),
+        "gemmi":        str(gemmi_path.relative_to(report._coot_root)),
+        "mmdb_exists":  mmdb_path.exists(),
         "gemmi_exists": gemmi_path.exists(),
     }
 
@@ -213,7 +202,7 @@ def write_test_files(req: WriteTestRequest):
 
 @router.post("/api/tests/compile-run")
 async def compile_and_run(req: CompileRunRequest):
-    """Write the test file, compile it, run it, stream all output."""
+    """Write the test file, compile it, run it, stream all output as plain text."""
     test_file = get_test_file_path(req.rel_source_path, req.fn_name, req.variant)
     test_file.parent.mkdir(parents=True, exist_ok=True)
     test_file.write_text(wrap_test_content(req.test_code, req.variant, req.fn_name))
@@ -228,7 +217,6 @@ async def compile_and_run(req: CompileRunRequest):
         compile_cmd += f" {args.cxx_flags}"
 
     async def stream_output():
-        import asyncio
         yield f"[WRITE]   {rel_path}\n"
         yield f"[COMPILE] {compile_cmd}\n\n"
         yield f"[WORKING_DIR] {str(report._coot_root)}\n\n"
@@ -279,7 +267,6 @@ async def git_commit_test(req: GitCommitRequest):
     ]
 
     async def stream_output():
-        import asyncio
         if not files_to_add:
             yield "[GIT ERROR] No existing test files found to commit — write them first\n"
             return
@@ -322,62 +309,76 @@ async def git_commit_test(req: GitCommitRequest):
     return StreamingResponse(stream_output(), media_type="text/plain")
 
 
-# ── Validate & fix ────────────────────────────────────────────────────────────
+# ── Validate & fix (single test, single variant) ─────────────────────────────
 
 @router.post("/api/tests/validate-fix")
 async def validate_and_fix(req: ValidateFixRequest):
-    """
-    Compile + run a single test variant. On failure, ask the LLM to fix it and
-    retry up to MAX_TEST_RETRIES times. Streams NDJSON progress events.
-
-    Event types: start | compiling | compile_output | running | run_output |
-                 fixing | fixed_code | done
+    """Compile + run a test variant; on failure, ask the LLM to fix it.
+    Streams the events emitted by `compile_run_fix_loop`, mapped to the
+    NDJSON shape the existing frontend expects.
     """
     async def stream():
         path = get_test_file_path(req.rel_source_path, req.fn_name, req.variant)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        current_code = req.test_code
 
-        yield json.dumps({"type": "start", "max": MAX_TEST_RETRIES, "variant": req.variant}) + "\n"
+        yield _ndjson({
+            "type": "start", "max": MAX_TEST_RETRIES, "variant": req.variant,
+        })
 
-        for attempt in range(1, MAX_TEST_RETRIES + 1):
-            path.write_text(wrap_test_content(current_code, req.variant, req.fn_name))
-
-            yield json.dumps({"type": "compiling", "attempt": attempt, "max": MAX_TEST_RETRIES}) + "\n"
-            compile_ok, compile_out = await compile_test(path)
-            yield json.dumps({"type": "compile_output", "text": compile_out, "ok": compile_ok}) + "\n"
-
-            if compile_ok:
-                yield json.dumps({"type": "running", "attempt": attempt}) + "\n"
-                run_ok, run_out = await run_test(path)
-                yield json.dumps({"type": "run_output", "text": run_out, "ok": run_ok}) + "\n"
-                if run_ok:
-                    yield json.dumps({"type": "done", "status": "pass", "attempts": attempt, "code": current_code}) + "\n"
-                    return
-                error_out = f"Compile: OK\nRun failed:\n{run_out}"
-            else:
-                error_out = compile_out
-
-            if attempt < MAX_TEST_RETRIES:
-                yield json.dumps({"type": "fixing", "attempt": attempt}) + "\n"
-                fix_prompt  = build_fix(req.fn_name, req.variant, current_code, error_out, attempt)
-                fixed_raw   = await call_ollama(req.model, fix_prompt)
-                current_code = strip_fences(fixed_raw) or current_code
-                yield json.dumps({"type": "fixed_code", "code": current_code}) + "\n"
-            else:
-                yield json.dumps({"type": "done", "status": "fail", "attempts": attempt, "code": current_code}) + "\n"
+        async for evt in compile_run_fix_loop(
+            model=req.model,
+            fn_name=req.fn_name,
+            variant=req.variant,
+            test_code=req.test_code,
+            test_path=path,
+        ):
+            t = evt["type"]
+            if t == "loop_start":
+                continue  # already emitted "start"
+            if t == "compiling":
+                yield _ndjson({"type": "compiling", "attempt": evt["attempt"], "max": evt["max"]})
+            elif t == "compile_output":
+                yield _ndjson({"type": "compile_output", "text": evt["text"], "ok": evt["ok"]})
+            elif t == "running":
+                yield _ndjson({"type": "running", "attempt": evt["attempt"]})
+            elif t == "run_output":
+                yield _ndjson({"type": "run_output", "text": evt["text"], "ok": evt["ok"]})
+            elif t == "fixing":
+                yield _ndjson({"type": "fixing", "attempt": evt["attempt"]})
+            elif t == "fixed_code":
+                yield _ndjson({"type": "fixed_code", "code": evt["code"]})
+            elif t == "loop_done":
+                yield _ndjson({
+                    "type": "done", "status": evt["status"],
+                    "attempts": evt["attempts"], "code": evt["code"],
+                })
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 # ── Batch generation ──────────────────────────────────────────────────────────
 
+def _function_source(rel_path: str, fn_line: int, fn_end: int) -> str:
+    """Slice a function's source out of its containing file."""
+    full_path = os.path.join(report._coot_root, rel_path)
+    with open(full_path, "r", errors="replace") as f:
+        lines = f.readlines()
+    start = max(0, fn_line - 1)
+    end   = min(len(lines), fn_end)
+    return "".join(lines[start:end])
+
+
 @router.post("/api/tests/generate-all")
 async def generate_all_tests(req: GenerateAllRequest):
-    """
-    Iterate every function, generate both tests, compile+run each, retry up to
-    MAX_TEST_RETRIES times on failure using the compile error as LLM feedback.
-    Streams NDJSON: start | progress | skip | attempt | done | error | finish
+    """Iterate every function, generate both tests, then compile/fix each.
+
+    The work for one function is:
+        1. probe the real MMDB function for ground-truth output (oracle)
+        2. ask the LLM for both MMDB and Gemmi tests in one shot
+        3. parse the response into two variants
+        4. for each variant: compile, run, and ask the LLM to fix on failure
+
+    Streams NDJSON: start | progress | skip | oracle_event | oracle |
+                    attempt | done | error | finish
     """
     async def stream_progress():
         tests = load_tests()
@@ -387,116 +388,119 @@ async def generate_all_tests(req: GenerateAllRequest):
             for fn in entry.get("functions", [])
         ]
         total = len(work)
-        yield json.dumps({"type": "start", "total": total}) + "\n"
+
+        yield _ndjson({"type": "start", "total": total})
 
         done = skipped = errors = 0
 
         for rel_path, fn in work:
             fn_name: str = fn["name"]
             fn_line: int = fn["line"]
-            fn_end: int  = fn["end_line"]
+            fn_end:  int = fn["end_line"]
+            mmdb_syms    = fn.get("mmdb_symbols", [])
             key = f"{rel_path}::{fn_name}:{fn_line}"
 
+            # ── Skip if both variants are already on disk ────────────────
             if req.skip_existing:
                 rec = tests.get(key, {})
                 if rec.get("mmdb_test") and rec.get("gemmi_test"):
                     skipped += 1
-                    yield json.dumps({
+                    yield _ndjson({
                         "type": "skip", "key": key, "fn": fn_name, "file": rel_path,
                         "done": done, "skipped": skipped, "errors": errors, "total": total,
-                    }) + "\n"
+                    })
                     continue
 
-            yield json.dumps({
+            yield _ndjson({
                 "type": "progress", "key": key, "fn": fn_name, "file": rel_path,
                 "done": done, "skipped": skipped, "errors": errors, "total": total,
-            }) + "\n"
+            })
 
             try:
-                full_path = os.path.join(report._coot_root, rel_path)
-                with open(full_path, "r", errors="replace") as f:
-                    all_lines = f.readlines()
-                source = "".join(all_lines[max(0, fn_line - 1):min(len(all_lines), fn_end)])
+                source = _function_source(rel_path, fn_line, fn_end)
 
-                mmdb_syms = fn.get("mmdb_symbols", [])
-                oracle_out = ""
+                # ── 1. Oracle probe ──────────────────────────────────────
                 probe = None
-                try:
-                    async for evt in run_mmdb_oracle(
-                        model=req.model,
-                        function_name=fn_name,
-                        source_code=source,
-                        mmdb_symbols=mmdb_syms,
-                        additional_instructions=req.additional_instructions,
-                        rel_source_path=rel_path,
-                    ):
-                        if evt.get("type") == "done":
-                            probe = evt["result"]
-                            continue
-                        yield json.dumps({
-                            "type": "oracle_event", "key": key, "fn": fn_name,
-                            "file": rel_path, "event": evt,
-                        }) + "\n"
-                    if probe and probe.ok:
-                        oracle_out = "\n".join(probe.probe_lines)
-                    yield json.dumps({
-                        "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
-                        "ok": bool(probe and probe.ok),
-                        "stage": probe.stage if probe else "none",
-                        "attempts": probe.attempts if probe else 0,
-                        "lines": (probe.probe_lines[:50] if probe else []),
-                    }) + "\n"
-                except Exception as ex:
-                    yield json.dumps({
-                        "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
-                        "ok": False, "stage": "crash", "error": str(ex),
-                    }) + "\n"
+                async for evt in run_oracle_for_function(
+                    model=req.model,
+                    function_name=fn_name,
+                    source_code=source,
+                    mmdb_symbols=mmdb_syms,
+                    additional_instructions=req.additional_instructions,
+                    rel_source_path=rel_path,
+                ):
+                    if evt["type"] == "pipeline_result":
+                        probe = evt["result"]
+                        continue
+                    # Tag every event with which function it belongs to.
+                    yield _ndjson({**evt, "key": key, "fn": fn_name, "file": rel_path})
 
-                prompt  = build_generate_test(fn_name, source, mmdb_syms,
-                                              "both", req.additional_instructions,
-                                              oracle_output=oracle_out,
-                                              rel_source_path=rel_path)
-                raw     = await call_ollama(req.model, prompt)
+                yield _ndjson({
+                    "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
+                    "ok":       bool(probe and probe.ok),
+                    "stage":    probe.stage    if probe else "none",
+                    "attempts": probe.attempts if probe else 0,
+                    "lines":    (probe.probe_lines[:50] if probe else []),
+                })
+
+                oracle_out = oracle_output_text(probe)
+                probe_src  = oracle_probe_source(probe)
+
+                # ── 2. Ask the LLM for both tests in one go ──────────────
+                prompt = build_generate_test(
+                    fn_name, source, mmdb_syms, "both",
+                    req.additional_instructions,
+                    oracle_output=oracle_out,
+                    rel_source_path=rel_path,
+                    probe_source=probe_src,
+                    probe_pdb_path=PROBE_PDB_PATH,
+                )
+                raw = await call_ollama(req.model, prompt)
                 mmdb_raw, gemmi_raw = parse_both_sections(raw)
-                initial = {"mmdb": strip_fences(mmdb_raw), "gemmi": strip_fences(gemmi_raw)}
+                initial = {
+                    "mmdb":  strip_fences(mmdb_raw),
+                    "gemmi": strip_fences(gemmi_raw),
+                }
 
+                # ── 3. Compile/run/fix each variant ──────────────────────
                 variant_results: dict[str, dict] = {}
                 for variant in ("mmdb", "gemmi"):
-                    current_code = initial[variant]
-                    if not current_code.strip():
-                        variant_results[variant] = {"code": "", "status": "skip", "attempts": 0}
+                    code = initial[variant]
+                    if not code.strip():
+                        variant_results[variant] = {
+                            "code": "", "status": "skip", "attempts": 0,
+                        }
                         continue
 
                     path = get_test_file_path(rel_path, fn_name, variant)
-                    path.parent.mkdir(parents=True, exist_ok=True)
+                    final = {"status": "fail", "attempts": 0, "code": code}
 
-                    for attempt in range(1, MAX_TEST_RETRIES + 1):
-                        path.write_text(wrap_test_content(current_code, variant, fn_name))
-                        compile_ok, compile_out = await compile_test(path)
-
-                        if compile_ok:
-                            run_ok, run_out = await run_test(path)
-                            if run_ok:
-                                variant_results[variant] = {"code": current_code, "status": "pass", "attempts": attempt}
-                                break
-                            error_out = f"Compile: OK\nRun output:\n{run_out}"
-                        else:
-                            error_out = compile_out
-
-                        if attempt < MAX_TEST_RETRIES:
-                            yield json.dumps({
+                    async for evt in compile_run_fix_loop(
+                        model=req.model,
+                        fn_name=fn_name,
+                        variant=variant,
+                        test_code=code,
+                        test_path=path,
+                    ):
+                        if evt["type"] == "fixing":
+                            yield _ndjson({
                                 "type": "attempt",
                                 "key": key, "fn": fn_name, "file": rel_path,
-                                "variant": variant, "attempt": attempt, "max": MAX_TEST_RETRIES,
-                                "error": error_out[:600],
+                                "variant": variant,
+                                "attempt": evt["attempt"], "max": MAX_TEST_RETRIES,
+                                "error": (evt.get("error") or "")[:600],
                                 "done": done, "skipped": skipped, "errors": errors, "total": total,
-                            }) + "\n"
-                            fix_prompt   = build_fix(fn_name, variant, current_code, error_out, attempt)
-                            fixed_raw    = await call_ollama(req.model, fix_prompt)
-                            current_code = strip_fences(fixed_raw) or current_code
-                        else:
-                            variant_results[variant] = {"code": current_code, "status": "fail", "attempts": attempt}
+                            })
+                        elif evt["type"] == "loop_done":
+                            final = {
+                                "status":   evt["status"],
+                                "attempts": evt["attempts"],
+                                "code":     evt["code"],
+                            }
 
+                    variant_results[variant] = final
+
+                # ── 4. Persist whatever we ended up with ─────────────────
                 rec = tests.get(key, {"notes": "", "status": "draft"})
                 for variant, result in variant_results.items():
                     if result["code"].strip():
@@ -507,23 +511,23 @@ async def generate_all_tests(req: GenerateAllRequest):
                 mmdb_r  = variant_results.get("mmdb",  {"status": "skip", "attempts": 0})
                 gemmi_r = variant_results.get("gemmi", {"status": "skip", "attempts": 0})
                 done += 1
-                yield json.dumps({
+                yield _ndjson({
                     "type": "done", "key": key, "fn": fn_name, "file": rel_path,
                     "done": done, "skipped": skipped, "errors": errors, "total": total,
-                    "mmdb_status":  mmdb_r["status"],  "mmdb_attempts":  mmdb_r["attempts"],
-                    "gemmi_status": gemmi_r["status"], "gemmi_attempts": gemmi_r["attempts"],
-                }) + "\n"
+                    "mmdb_status":   mmdb_r["status"],  "mmdb_attempts":  mmdb_r["attempts"],
+                    "gemmi_status":  gemmi_r["status"], "gemmi_attempts": gemmi_r["attempts"],
+                })
 
             except Exception as ex:
                 errors += 1
-                yield json.dumps({
+                yield _ndjson({
                     "type": "error", "key": key, "fn": fn_name, "file": rel_path,
                     "done": done, "skipped": skipped, "errors": errors, "total": total,
                     "message": str(ex),
-                }) + "\n"
+                })
 
-        yield json.dumps({
+        yield _ndjson({
             "type": "finish", "done": done, "skipped": skipped, "errors": errors, "total": total,
-        }) + "\n"
+        })
 
     return StreamingResponse(stream_progress(), media_type="application/x-ndjson")

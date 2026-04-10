@@ -1,4 +1,4 @@
-Write a minimal C++ "probe" program that runs the EXISTING, UNMODIFIED MMDB2 version of the following function on a real PDB file and prints its output to stdout.
+Write a minimal C++ "probe" program that runs the EXISTING, UNMODIFIED MMDB2 version of the function below on a real PDB file and prints its output to stdout.
 
 This is NOT a refactor. Do not port the function to Gemmi. Do not output any
 `gemmi::` types, `#include <gemmi/...>` headers, or Gemmi helpers. The probe
@@ -6,32 +6,55 @@ must include the function's real header and call the original MMDB function
 directly — its job is purely to observe and print what the existing function
 returns, so we can use those values as the ground truth when writing tests.
 
+## Function under test
+
 Function: `$function_name`
 MMDB symbols used: $symbols_list
 $additional_instructions
+
+## API reference (use ONLY what is documented here — do not invent functions, types, or members)
 $api_context
 $header_include
+$file_includes
 
-## Source code:
+## Source code of the function
 ```cpp
 $source_code
 ```
 
-The probe program must:
+## What the probe must do
 
-1. Contain an `int main(int, char**)` — no gtest, no TEST() macros.
-2. Load the PDB file (coordinate data) from this path  `$pdb_path`.
-3. Navigate to the real model / chain / residue / atom the function needs, pulling objects out of the loaded manager — do NOT build any synthetic structures by hand.
+1. Contain a single `int main(int, char**)`. No gtest, no `TEST()` macros.
+2. Load coordinate data from this exact path:
+       `$pdb_path`
+   using `mmdb::Manager::ReadCoorFile`. Check the return code and bail out
+   on error.
+3. Navigate the loaded manager (model → chain → residue → atom) until you
+   have the real object(s) the function expects. Do NOT build any synthetic
+   mmdb structures by hand.
 4. Call `$function_name` with those real inputs.
-5. Print the function's output (return value, or the observable state it mutates) to stdout, one value per line, each prefixed with `PROBE:`.
-   - Example: `std::cout << "PROBE: return_value=" << result << std::endl;`
-   - For vectors/lists, print the size and then each element: `PROBE: size=3` then `PROBE: elem[0]=...`.
-   - For structs, print each field on its own PROBE line: `PROBE: field_name=value`.
+5. Print the function's output to stdout, one value per line, each prefixed
+   with `PROBE: `:
+       std::cout << "PROBE: return_value=" << result << std::endl;
+   - For vectors / lists, print the size first then each element:
+       PROBE: size=3
+       PROBE: elem[0]=...
+   - For structs, print each field on its own PROBE line.
    - For floats use `std::setprecision(6)`.
-6. Return 0 on success, non-zero if loading the file or calling the function fails.
+6. Return 0 on success, non-zero on any error.
 
-The probe will be compiled against the same MMDB / cootapi libraries as the regular tests, so you can `#include <mmdb2/mmdb_manager.h>` and the function header.
-Do NOT include `<gemmi/...>` headers — gemmi is not needed and must not appear anywhere in the probe source.
+## Hard rules
 
-Output ONLY the probe source code inside a single ```cpp``` block, starting with the includes. Do not output any other text.
-Make no mistakes, be simple and concise, do not make up any function names or types or includes, use only what you know.
+- Use ONLY symbols, types, and members that appear in the API reference above
+  or in the function's source code. If you are not sure a method exists, do
+  not call it. Inventing API names will fail compilation and waste a retry.
+- Do NOT include `<gemmi/...>` headers. Gemmi must not appear anywhere in the
+  probe source.
+- Do NOT mock, stub, or reimplement the function under test.
+- Do NOT include headers that are not in the "Real includes from the source
+  file" block above unless they are part of the C++ standard library.
+
+## Output format
+
+Output ONLY the probe source code inside a single ```cpp``` block, starting
+with the includes. Do not output any other text before or after the block.

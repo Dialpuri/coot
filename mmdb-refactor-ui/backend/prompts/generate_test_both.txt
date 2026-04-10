@@ -1,15 +1,20 @@
 Write TWO Google Test (GTest) unit tests for the following C++ function:
-1. An MMDB2 version (tests the current implementation)
-2. A Gemmi version (tests the future refactored implementation)
+1. An MMDB2 version that exercises the current implementation.
+2. A Gemmi version that exercises the future refactored implementation.
+
+## Function under test
 
 Function: `$function_name`
 MMDB symbols used: $symbols_list
 $additional_instructions
+
+## API reference (use ONLY what is documented here — do not invent functions, types, or members)
 $api_context
 $header_include
 $file_includes
+$probe_reference
 
-## Source code:
+## Source code
 ```cpp
 $source_code
 ```
@@ -17,15 +22,44 @@ $source_code
 $gtest_style
 $oracle_values
 
-The MMDB test runs the function on real PDB data and captures its output — this is the oracle.
-The Gemmi test loads the same PDB file, calls the refactored function, and asserts its output matches the MMDB oracle.
-Do NOT hardcode expected values; derive them by running the MMDB function at test runtime.
+## What the tests must do
 
-Required headers for each variant:
-  MMDB test:  #include <gtest/gtest.h>  #include <mmdb2/mmdb_manager.h>
-  Gemmi test: #include <gtest/gtest.h>  #include <gemmi/structure.hpp>  #include <gemmi/model.hpp>
+MMDB test:
+  - Reuse the data-loading and function-call code from the working probe
+    above. Copy the probe's loader verbatim into a `TEST()` body.
+  - Replace the probe's `std::cout << "PROBE: ..."` lines with `EXPECT_EQ`,
+    `EXPECT_NEAR`, or `EXPECT_STREQ` against the measured oracle values.
 
-Output EXACTLY this format — no other text:
+Gemmi test:
+  - Read the same PDB file (see the probe reference) via
+    `gemmi::read_structure_file`.
+  - Walk the gemmi hierarchy to the same logical object and call the
+    refactored function. Assert against the same oracle values.
+
+Both tests use `TEST()` or `TEST_F()` macros and must NOT mock anything or
+construct synthetic mmdb / gemmi structures by hand.
+
+## Required headers (use these exact spellings — nothing else from mmdb)
+
+  MMDB test:  #include <gtest/gtest.h>
+              #include <mmdb2/mmdb_manager.h>
+              (plus the function's own header — see "Where the function lives")
+
+  Gemmi test: #include <gtest/gtest.h>
+              #include <gemmi/structure.hpp>
+              #include <gemmi/model.hpp>
+
+Do NOT include `mmdb_model.h`, `mmdb_chain.h`, `mmdb_atom.h`,
+`mmdb_root.h`, or any other mmdb header — those paths do not exist as
+standalone public headers.
+
+## Hard rules
+
+- Use ONLY symbols and members that appear in the API reference, the
+  function source code, or the working probe. Do not invent function
+  names, member names, or types.
+
+## Output format (no other text)
 
 === MMDB TEST ===
 ```cpp

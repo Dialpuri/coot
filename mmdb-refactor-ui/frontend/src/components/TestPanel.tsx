@@ -47,6 +47,13 @@ function formatOracleEvent(evt: { type: string; [k: string]: unknown }): string 
     // Raw token stream — no decoration so the probe source appears contiguously.
     return evt.text as string
   }
+  if (t === 'llm_thinking') {
+    // Reasoning-model thinking — kept on its own prefixed lines so it can't be
+    // confused with the actual probe source. Indented to make it visually
+    // distinct in the terminal.
+    const text = (evt.text as string) || ''
+    return text.split('\n').map(l => `  ⋯ ${l}`).join('\n')
+  }
   if (t === 'llm_response') {
     const streamed = (evt as { _already_streamed?: boolean })._already_streamed
     const src = (evt.source as string) || ''
@@ -315,6 +322,15 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
             case 'test_start':
               setTerminal(prev => prev + '[GENERATE] Streaming test code…\n')
               break
+            case 'test_thinking': {
+              // Surface the model's reasoning in the terminal so we can see
+              // it work through the API before it commits to code. Prefixed
+              // and indented so it's clearly not part of the assembled test.
+              const text = (evt.text as string) || ''
+              const block = text.split('\n').map(l => `  ⋯ ${l}`).join('\n')
+              setTerminal(prev => prev + block)
+              break
+            }
             case 'test_chunk':
               accumulated += (evt.text as string)
               applyAccumulated()

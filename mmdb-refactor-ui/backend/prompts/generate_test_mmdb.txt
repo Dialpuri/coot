@@ -1,13 +1,18 @@
 Write a Google Test (GTest) unit test for the following C++ function using MMDB2 types.
 
+## Function under test
+
 Function: `$function_name`
 MMDB symbols used: $symbols_list
 $additional_instructions
+
+## API reference (use ONLY what is documented here — do not invent functions, types, or members)
 $api_context
 $header_include
 $file_includes
+$probe_reference
 
-## Source code:
+## Source code
 ```cpp
 $source_code
 ```
@@ -15,10 +20,26 @@ $source_code
 $gtest_style
 $oracle_values
 
-Write a focused GTest unit test that:
-- Reads a real PDB or mmCIF file from disk to obtain the molecular data needed by the function (do NOT construct synthetic mmdb structures by hand)
-- Calls the function with the real objects obtained from that file
-- Asserts the function produces exactly the measured output shown above using `EXPECT_EQ` / `EXPECT_NEAR` / `EXPECT_STREQ`
-- Uses TEST() or TEST_F() macros
+## What the test must do
+
+- Reuse the data-loading and function-call code from the working probe
+  shown above. The probe already loaded a real PDB file, walked the mmdb
+  hierarchy to the right object, and called `$function_name` successfully —
+  copy that loading code verbatim into your `TEST()` body.
+- Replace the probe's `std::cout << "PROBE: ..."` lines with `EXPECT_EQ`,
+  `EXPECT_NEAR`, or `EXPECT_STREQ` assertions against the measured values
+  shown in the oracle section above.
+- Use `TEST()` or `TEST_F()` macros.
+
+## Hard rules
+
+- Do NOT construct synthetic mmdb structures by hand. Do NOT mock anything.
+- The ONLY MMDB header you need is `#include <mmdb2/mmdb_manager.h>` plus
+  the function's own header. Do not include `mmdb_model.h`, `mmdb_chain.h`,
+  `mmdb_atom.h`, `mmdb_root.h`, or any other mmdb header — those paths do
+  not exist as standalone public headers.
+- Use ONLY symbols and members that appear in the API reference above, the
+  function source code, or the working probe. Do not invent function names,
+  member names, or types.
 
 Output ONLY the test code inside a single ```cpp``` block.

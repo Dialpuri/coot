@@ -183,6 +183,8 @@ def _format_file_includes(rel_source_path: str) -> str:
     This tells the LLM the exact headers the original translation unit uses,
     so it doesn't invent include paths that don't exist on disk.
     """
+    return ""
+
     includes = read_source_includes(rel_source_path)
     if not includes:
         return ""
@@ -202,10 +204,27 @@ def _format_header_include(rel_source_path: str) -> str:
     """Render a '## Where the function lives' prompt section, or empty string.
 
     Tells the LLM explicitly which header to `#include` and stresses that the
-    function is real — not to be mocked.
+    function is real — not to be mocked. Also pins down the MMDB header so
+    the LLM stops dragging in `mmdb_model.h`, `mmdb_chain.h`, etc., none of
+    which exist as standalone public headers.
     """
+    mmdb_rule = (
+        "The ONLY MMDB header you need is `#include <mmdb2/mmdb_manager.h>`. "
+        "It declares `mmdb::Manager`, `mmdb::Model`, `mmdb::Chain`, "
+        "`mmdb::Residue`, `mmdb::Atom`, and the file-loading API. Do NOT "
+        "`#include <mmdb2/mmdb_model.h>`, `<mmdb2/mmdb_chain.h>`, "
+        "`<mmdb2/mmdb_atom.h>`, `<mmdb2/mmdb_root.h>`, or any other mmdb "
+        "header — those paths do not exist."
+    )
+
     if not rel_source_path:
-        return ""
+        return (
+            "\n\n## Where the function lives\n\n"
+            f"The function is defined in the coot tree. Do NOT mock it, "
+            "reimplement it, or declare a local stub — `#include` its real "
+            "header and call it directly.\n\n"
+            f"{mmdb_rule}\n"
+        )
     header = find_header_for_source(rel_source_path)
     if not header:
         return (
@@ -214,7 +233,8 @@ def _format_header_include(rel_source_path: str) -> str:
             "reimplement it, or declare a local stub — `#include` the real "
             "declaration from its header (in the same directory as the .cc "
             "file) and call it directly. The `-I<coot root>` include path is "
-            "already on the compile command.\n"
+            "already on the compile command.\n\n"
+            f"{mmdb_rule}\n"
         )
     return (
         "\n\n## Where the function lives\n\n"
@@ -223,7 +243,8 @@ def _format_header_include(rel_source_path: str) -> str:
         "reimplement it, or declare a local stub:\n\n"
         f"```cpp\n#include \"{header}\"\n```\n\n"
         "The coot source tree is already on the compile command's include path "
-        "(`-I<coot root>`), so this include will resolve without any extra flags.\n"
+        f"(`-I<coot root>`), so this include will resolve without any extra flags.\n\n"
+        f"{mmdb_rule}\n"
     )
 
 
@@ -242,13 +263,22 @@ def build_refactor(function_name: str, code: str, mmdb_symbols: list[str],
 def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list[str],
                         target: str, additional_instructions: str = "",
                         oracle_output: str = "",
-                        rel_source_path: str = "") -> str:
+                        rel_source_path: str = "",
+                        probe_source: str = "",
+                        probe_pdb_path: str = "") -> str:
     """Build a test-generation prompt for target='mmdb'|'gemmi'|'both'.
 
-    If `oracle_output` is provided, it is the captured stdout of a probe run
-    that executed the function on a real PDB file. These values are injected
-    into the prompt so the LLM can write assertions against real, measured
-    outputs instead of guessing.
+    Inputs from a successful oracle run
+    -----------------------------------
+    `oracle_output`  — captured PROBE: lines from the real run, used as the
+                       expected values inside `EXPECT_*` assertions.
+    `probe_source`   — the C++ source of the probe `main()` that produced
+                       those values. The MMDB test should be that source
+                       wrapped in a `TEST()` block, not a freshly-imagined
+                       loader. Including it stops the LLM from inventing
+                       its own (broken) data-loading code.
+    `probe_pdb_path` — the PDB file the probe used; the test must read the
+                       same file so its assertions match.
 
     If `rel_source_path` is provided, we look up the matching header and tell
     the LLM to `#include` it so it calls the real function instead of mocking.
@@ -263,27 +293,78 @@ def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list
         oracle_values=_format_oracle(oracle_output),
         header_include=_format_header_include(rel_source_path),
         file_includes=_format_file_includes(rel_source_path),
+        probe_reference=_format_probe_reference(probe_source, probe_pdb_path),
     )
     if target == "mmdb":
         return _T_TEST_MMDB.substitute(**common)
     if target == "gemmi":
         return _T_TEST_GEMMI.substitute(**common)
-    return _T_TEST_BOTH.substitute(**common)
+    return _T_TEST_MMDB.substitute(**common)
+
+
+# Symbols the probe ALWAYS needs docs for, regardless of what the function
+# under test happens to touch. The probe has to open a PDB file and walk the
+# mmdb hierarchy down to whatever object the function expects — but the
+# function itself usually receives its arguments already-constructed, so its
+# own AST-derived `mmdb_symbols` rarely mention `ReadCoorFile`, `GetModel`,
+# `GetChain`, etc. We force those docs into the probe's API context so the
+# LLM actually knows how to load a file and navigate the hierarchy.
+#
+# These names are matched against the doc headings by doc_extractor; anything
+# that doesn't resolve is silently dropped, so over-listing is safe.
+_PROBE_ESSENTIAL_SYMBOLS: list[str] = [
+    # File I/O (lives on Root / Manager)
+    "mmdb::Manager",
+    "mmdb::Root::ReadCoorFile",
+    "mmdb::Root::ReadPDBASCII",
+    "mmdb::Root::ReadCIFASCII",
+    "mmdb::Root::GetErrorDescription",
+    # Hierarchy navigation: Manager/CoorManager → Model → Chain → Residue → Atom
+    "mmdb::CoorManager::GetNumberOfModels",
+    "mmdb::CoorManager::GetModel",
+    "mmdb::CoorManager::GetFirstDefaultModel",
+    "mmdb::Model::GetNumberOfChains",
+    "mmdb::Model::GetChain",
+    "mmdb::Chain::GetChainID",
+    "mmdb::Chain::GetNumberOfResidues",
+    "mmdb::Chain::GetResidue",
+    "mmdb::Residue::GetNumberOfAtoms",
+    "mmdb::Residue::GetAtom",
+    "mmdb::Residue::GetResName",
+    "mmdb::Residue::GetSeqNum",
+    "mmdb::Atom::GetAtomName",
+    "mmdb::Atom::GetChainID",
+    "mmdb::Atom::GetResidue",
+]
 
 
 def build_probe_mmdb(function_name: str, source_code: str,
                      mmdb_symbols: list[str], additional_instructions: str = "",
                      rel_source_path: str = "", pdb_path: str = "") -> str:
-    """Build a prompt asking the LLM to write an MMDB probe main()."""
+    """Build a prompt asking the LLM to write an MMDB probe main().
+
+    The probe needs to load a PDB file and walk the mmdb hierarchy down to
+    the right object, so we merge `_PROBE_ESSENTIAL_SYMBOLS` into the
+    caller-supplied symbol list before resolving docs. This ensures the LLM
+    always sees the `ReadCoorFile` / `GetModel` / `GetChain` / etc. API
+    reference, even if none of those appear in the function's own AST symbols.
+    """
+    merged_symbols: list[str] = list(mmdb_symbols)
+    seen = set(merged_symbols)
+    for sym in _PROBE_ESSENTIAL_SYMBOLS:
+        if sym not in seen:
+            merged_symbols.append(sym)
+            seen.add(sym)
+
     return _T_PROBE_MMDB.substitute(
         function_name=function_name,
         symbols_list=", ".join(mmdb_symbols) if mmdb_symbols else "none",
         additional_instructions=_additional(additional_instructions),
-        api_context=_api_context(mmdb_symbols),
+        api_context=_api_context(merged_symbols),
         source_code=source_code,
         header_include=_format_header_include(rel_source_path),
+        file_includes=_format_file_includes(rel_source_path),
         pdb_path=pdb_path,
-        # file_includes=_format_file_includes(rel_source_path),
     )
 
 
@@ -303,6 +384,42 @@ def _format_oracle(raw: str) -> str:
         "as the expected values in your test assertions — do NOT guess or "
         "hardcode different numbers.\n\n"
         f"```\n{body}\n```\n"
+    )
+
+
+def _format_probe_reference(probe_source: str, pdb_path: str) -> str:
+    """Render the working probe `main()` as a reference for the test prompt.
+
+    The probe has already been compiled and run successfully — it loaded the
+    PDB, walked the mmdb hierarchy to the right object, and called the
+    function under test. The MMDB test should reuse this exact loading code
+    inside a TEST() block instead of inventing its own. Showing the LLM the
+    working source has been the most reliable way to stop it from mocking
+    things or guessing the API.
+    """
+    src = (probe_source or "").strip()
+    if not src:
+        return ""
+    pdb_note = (
+        f"The probe loaded `{pdb_path}`. Your MMDB test must read the SAME "
+        "file so its assertions match the measured values shown above.\n\n"
+        if pdb_path else ""
+    )
+    return (
+        "\n\n## Working probe (already compiled and run successfully)\n\n"
+        "The C++ source below is a `main()` that loaded a real PDB file, "
+        "walked the mmdb hierarchy, and called the function under test to "
+        "produce the measured values listed above. Treat it as ground truth.\n\n"
+        f"{pdb_note}"
+        "When writing the MMDB test:\n"
+        "  - COPY the data-loading and function-call lines from this probe "
+        "into your `TEST()` body verbatim. Do not invent a different loader.\n"
+        "  - Drop the `PROBE:` `std::cout` lines and replace them with "
+        "`EXPECT_EQ` / `EXPECT_NEAR` / `EXPECT_STREQ` against the measured "
+        "values.\n"
+        "  - Use ONLY the headers the probe uses — typically just "
+        "`#include <mmdb2/mmdb_manager.h>` plus the function's own header.\n\n"
+        f"```cpp\n{src}\n```\n"
     )
 
 

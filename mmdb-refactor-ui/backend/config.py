@@ -35,6 +35,18 @@ _parser.add_argument(
          "visible in the console as it arrives (useful for debugging; adds a "
          "small per-chunk framing overhead but no extra compute).",
 )
+_parser.add_argument(
+    "--no-think",
+    action="store_true",
+    help="Disable Ollama's `think: true` flag. Only set this if your chosen "
+         "model is not a reasoning model and Ollama rejects the field.",
+)
+_parser.add_argument(
+    "--probe-workdir",
+    default=str(Path(__file__).parent / "probe_workdir"),
+    help="Directory used by the oracle to write probe.cc / probe binaries. "
+         "Kept around between runs so the latest probe source can be inspected.",
+)
 args, _ = _parser.parse_known_args()
 
 # ── Paths & URLs ──────────────────────────────────────────────────────────────
@@ -52,8 +64,10 @@ GEMMI_INCLUDE_DIR = "/opt/homebrew/opt/gemmi/include/"
 
 MAX_TEST_RETRIES  = 5
 PROBE_PDB_PATH    = args.probe_pdb
+PROBE_WORKDIR     = Path(args.probe_workdir)
 MAX_PROBE_RETRIES = 3
 DEV_STREAM_LLM    = args.stream_llm
+LLM_THINK         = not args.no_think
 
 # ── GTest detection ───────────────────────────────────────────────────────────
 def _detect_gtest_flags() -> str:

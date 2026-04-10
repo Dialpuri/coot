@@ -1,14 +1,49 @@
 """
-Oracle probes: ask the LLM for a standalone C++ main() that runs a function on
-a real PDB file, compile it, run it, and capture its stdout so the measured
-output values can be fed back into the test-generation prompt.
+Oracle probe pipeline.
 
-`run_mmdb_oracle` is an async generator that yields progress events describing
-each step (LLM call, compile command, run output, retries, etc.). The final
-event is always `{"type": "done", "result": ProbeResult}`.
+Goal
+----
+Test data must be grounded in real execution, not in the LLM's guesses about
+what a function returns. The oracle does that:
+
+    1. Ask the LLM to write a tiny standalone C++ probe — a `main()` that
+       loads a real PDB file, calls the unmodified MMDB function, and prints
+       its output prefixed with "PROBE: ".
+    2. Compile the probe.
+    3. Run it on the configured PDB.
+    4. Capture the "PROBE: ..." lines from stdout.
+    5. Hand those lines back to the test-generation prompt as ground-truth
+       expected values.
+
+If any step fails (LLM produced gemmi code, didn't compile, ran but emitted
+no PROBE lines, etc.) we feed the error back to the LLM and retry, up to
+`MAX_PROBE_RETRIES` times.
+
+Public API
+----------
+`run_mmdb_oracle(...)` is an async generator that yields progress events for
+the UI. The very last event is always:
+
+    {"type": "done", "result": ProbeResult}
+
+Event vocabulary
+----------------
+    info          {"text": str}                                 — status line
+    llm_call      {"attempt": int, "max": int, "model": str,
+                   "prompt_chars": int, "streaming": bool}      — about to call Ollama
+    llm_thinking  {"attempt": int, "text": str}                 — reasoning chunk (streaming)
+    llm_chunk     {"attempt": int, "text": str}                 — response chunk (streaming)
+    llm_response  {"attempt": int, "source": str,
+                   "source_chars": int, "elapsed_s": float}     — full LLM output
+    compile_cmd   {"cmd": str}                                  — about to compile
+    compile_out   {"ok": bool, "text": str, "elapsed_s": float} — compiler output
+    run_cmd       {"cmd": str, "pdb": str}                      — about to run
+    run_out       {"ok": bool, "text": str,
+                   "probe_lines": list, "elapsed_s": float}     — probe stdout
+    retry         {"attempt": int, "reason": str}               — going around again
+    done          {"result": ProbeResult}                       — final outcome
 """
 import asyncio
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,20 +51,30 @@ from typing import AsyncIterator
 
 import report
 from compiler import make_probe_compile_cmd
-from config import PROBE_PDB_PATH, MAX_PROBE_RETRIES, DEV_STREAM_LLM, args
+from config import (
+    DEV_STREAM_LLM,
+    MAX_PROBE_RETRIES,
+    PROBE_PDB_PATH,
+    PROBE_WORKDIR,
+    args,
+)
 from ollama import call_ollama, stream_ollama
 from prompts import PROBE_SYSTEM_CONTEXT, build_probe_mmdb, strip_fences
 
 
+# ── Result type ───────────────────────────────────────────────────────────────
+
 @dataclass
 class ProbeResult:
     ok: bool
-    raw_stdout: str              # everything the probe printed (or compile error)
-    probe_lines: list[str]       # just the "PROBE: ..." lines
-    probe_source: str            # the C++ source that was compiled
+    raw_stdout: str          # everything the probe printed (or compile error)
+    probe_lines: list[str]   # only the "PROBE: ..." lines
+    probe_source: str        # the C++ source that was compiled
     attempts: int
-    stage: str                   # "llm" | "compile" | "run" | "ok"
+    stage: str               # "llm" | "compile" | "run" | "ok"
 
+
+# ── Subprocess helpers ────────────────────────────────────────────────────────
 
 def _make_compile_cmd(probe_src: Path, output_bin: Path) -> str:
     cmd = make_probe_compile_cmd(probe_src, output_bin)
@@ -63,6 +108,110 @@ def _extract_probe_lines(stdout: str) -> list[str]:
     return [ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("PROBE:")]
 
 
+# ── LLM step ──────────────────────────────────────────────────────────────────
+
+async def _ask_llm_for_probe(
+    model: str,
+    prompt: str,
+    attempt: int,
+) -> AsyncIterator[dict]:
+    """Wrap an Ollama call so it yields the same event shape regardless of
+    whether we are streaming.
+
+    Yields zero or more `llm_thinking` / `llm_chunk` events while the model
+    talks, then exactly one `llm_response` event with the full source.
+    """
+    yield {
+        "type":         "llm_call",
+        "attempt":      attempt,
+        "max":          MAX_PROBE_RETRIES,
+        "model":        model,
+        "prompt_chars": len(prompt),
+        "streaming":    DEV_STREAM_LLM,
+    }
+
+    t0 = time.monotonic()
+
+    if DEV_STREAM_LLM:
+        parts: list[str] = []
+        try:
+            async for evt in stream_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT):
+                if evt["kind"] == "thinking":
+                    yield {"type": "llm_thinking", "attempt": attempt, "text": evt["text"]}
+                else:
+                    parts.append(evt["text"])
+                    yield {"type": "llm_chunk", "attempt": attempt, "text": evt["text"]}
+        except Exception as ex:
+            yield {"type": "info", "text": f"LLM stream error: {ex}"}
+        raw = "".join(parts)
+    else:
+        raw = await call_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT)
+
+    source = strip_fences(raw).strip()
+    yield {
+        "type":         "llm_response",
+        "attempt":      attempt,
+        "source":       source,
+        "source_chars": len(source),
+        "elapsed_s":    round(time.monotonic() - t0, 2),
+    }
+
+
+# ── Sanity & retry-prompt builders ────────────────────────────────────────────
+
+def _validate_probe_source(source: str) -> str | None:
+    """Return a rejection reason, or None if the source is acceptable."""
+    if not source:
+        return "empty"
+    if "gemmi" in source.lower():
+        return "contains_gemmi"
+    return None
+
+
+def _retry_prompt_for_rejection(base_prompt: str, reason: str, source: str) -> str:
+    if reason == "empty":
+        return f"{base_prompt}\n\nPrevious attempt produced no code. Try again."
+    if reason == "contains_gemmi":
+        return (
+            f"{base_prompt}\n\n"
+            "Your previous probe contained `gemmi` code. That is forbidden. "
+            "This probe MUST be pure MMDB2 — no `gemmi::` types, no "
+            "`#include <gemmi/...>`, no Gemmi helpers anywhere. Rewrite the "
+            "probe using only MMDB2 and the real coot header for the function "
+            "under test.\n\n"
+            f"Previous (rejected) source:\n```cpp\n{source}\n```"
+        )
+    return base_prompt
+
+
+def _retry_prompt_for_compile_error(base_prompt: str, compile_out: str, source: str) -> str:
+    return (
+        f"{base_prompt}\n\n"
+        f"Your previous probe failed to compile. Error:\n```\n{compile_out[:2000]}\n```\n"
+        f"Previous source:\n```cpp\n{source}\n```\n"
+        "Fix the problem and output the full corrected probe source."
+    )
+
+
+def _retry_prompt_for_run_failure(
+    base_prompt: str, source: str, run_out: str, run_ok: bool
+) -> str:
+    hint = (
+        "No PROBE: lines were printed — remember every output line must "
+        "start with 'PROBE: '."
+        if run_ok
+        else f"The probe exited with an error. Output:\n```\n{run_out[:2000]}\n```"
+    )
+    return (
+        f"{base_prompt}\n\n"
+        f"Your previous probe compiled but did not produce usable output. {hint}\n"
+        f"Previous source:\n```cpp\n{source}\n```\n"
+        "Fix the problem and output the full corrected probe source."
+    )
+
+
+# ── Main pipeline ─────────────────────────────────────────────────────────────
+
 async def run_mmdb_oracle(
     model: str,
     function_name: str,
@@ -72,23 +221,7 @@ async def run_mmdb_oracle(
     pdb_path: str | None = None,
     rel_source_path: str = "",
 ) -> AsyncIterator[dict]:
-    """
-    Async generator. Yields event dicts describing each step of the probe
-    pipeline. The last event is always:
-
-        {"type": "done", "result": ProbeResult}
-
-    Event types (all include "type"):
-      info          — a human-readable status line  {"text": str}
-      llm_call      — about to call Ollama          {"attempt": int, "max": int, "model": str}
-      llm_response  — LLM returned probe source     {"attempt": int, "source": str, "elapsed_s": float}
-      compile_cmd   — compile command about to run  {"cmd": str}
-      compile_out   — compiler stdout/stderr        {"ok": bool, "text": str, "elapsed_s": float}
-      run_cmd       — probe binary about to run     {"cmd": str, "pdb": str}
-      run_out       — probe stdout                  {"ok": bool, "text": str, "probe_lines": list, "elapsed_s": float}
-      retry         — about to retry                {"attempt": int, "reason": str}
-      done          — final result                  {"result": ProbeResult}
-    """
+    """Drive the LLM → compile → run loop. See module docstring for details."""
     pdb = pdb_path or PROBE_PDB_PATH
     yield {"type": "info", "text": f"probe PDB: {pdb}"}
     if not Path(pdb).exists():
@@ -99,164 +232,101 @@ async def run_mmdb_oracle(
         )}
         return
 
+    # Workdir is reused between runs so the latest probe.cc is inspectable.
+    PROBE_WORKDIR.mkdir(parents=True, exist_ok=True)
+    probe_src = PROBE_WORKDIR / "probe.cc"
+    probe_bin = PROBE_WORKDIR / "probe"
+    yield {"type": "info", "text": f"probe workdir: {PROBE_WORKDIR}"}
+
     base_prompt = build_probe_mmdb(
         function_name, source_code, mmdb_symbols, additional_instructions,
-        rel_source_path=rel_source_path,
-        pdb_path=pdb
+        rel_source_path=rel_source_path, pdb_path=pdb,
     )
+    # Persist the prompt next to the probe so devs can re-run it manually.
+    (PROBE_WORKDIR / "probe_prompt.txt").write_text(base_prompt)
+
     prompt = base_prompt
     last_source = ""
     last_error = ""
-    yield {"type": "info", "text": f"base_prompt → {base_prompt}"}
 
-    prompt_path = Path("/Users/dialpuri/lmb/coot/mmdb-recon/bin/probe.txt")
-    prompt_path.write_text(base_prompt)
-    # with tempfile.TemporaryDirectory(prefix="/Users/dialpuri/lmb/coot/mmdb-recon/bin/mmdb_probe", ) as tmp:
-    if True:
-        tmp_dir = Path("/Users/dialpuri/lmb/coot/mmdb-recon/bin")
-        probe_src = tmp_dir / "probe.cc"
-        probe_bin = tmp_dir / "probe"
-        yield {"type": "info", "text": f"probe workdir: {tmp_dir}"}
+    for attempt in range(1, MAX_PROBE_RETRIES + 1):
 
-        for attempt in range(1, MAX_PROBE_RETRIES + 1):
-            # ── 1. Ask the LLM for probe source ──────────────────────────────
-            yield {
-                "type": "llm_call",
-                "attempt": attempt,
-                "max": MAX_PROBE_RETRIES,
-                "model": model,
-                "prompt_chars": len(prompt),
-                "streaming": DEV_STREAM_LLM,
-            }
-            t0 = time.monotonic()
+        # ── 1. Ask the LLM ────────────────────────────────────────────────
+        source = ""
+        async for evt in _ask_llm_for_probe(model, prompt, attempt):
+            if evt["type"] == "llm_response":
+                source = evt["source"]
+            yield evt
 
-            if DEV_STREAM_LLM:
-                # Dev mode: stream chunks live into the terminal so we can
-                # watch the LLM write the probe. Same total compute as the
-                # non-streaming path; only the transport differs.
-                raw_parts: list[str] = []
-                try:
-                    async for chunk in stream_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT):
-                        raw_parts.append(chunk)
-                        yield {"type": "llm_chunk", "attempt": attempt, "text": chunk}
-                except Exception as ex:
-                    yield {"type": "info", "text": f"LLM stream error: {ex}"}
-                raw = "".join(raw_parts)
-            else:
-                raw = await call_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT)
-
-            llm_elapsed = time.monotonic() - t0
-            source = strip_fences(raw).strip()
-
-            yield {
-                "type": "llm_response",
-                "attempt": attempt,
-                "source": source,
-                "source_chars": len(source),
-                "elapsed_s": round(llm_elapsed, 2),
-            }
-
-            if not source:
-                last_error = "LLM returned empty probe source"
-                yield {"type": "info", "text": "LLM returned empty source — retrying"}
-                prompt = f"{base_prompt}\n\nPrevious attempt produced no code. Try again."
-                if attempt < MAX_PROBE_RETRIES:
-                    yield {"type": "retry", "attempt": attempt, "reason": "empty LLM response"}
-                continue
-
-            # Pre-compile sanity check: the probe must be pure MMDB. If the LLM
-            # slipped gemmi in anyway (ignoring both system and user prompts),
-            # reject and retry with explicit feedback instead of wasting a compile.
-            if "gemmi" in source.lower():
-                last_source = source
-                last_error = "probe source contained gemmi — rejected before compile"
-                yield {
-                    "type": "info",
-                    "text": "probe contained 'gemmi' — rejecting and retrying (MMDB only)",
-                }
-                if attempt < MAX_PROBE_RETRIES:
-                    yield {"type": "retry", "attempt": attempt, "reason": "contained gemmi"}
-                    prompt = (
-                        f"{base_prompt}\n\n"
-                        "Your previous probe contained `gemmi` code. That is forbidden. "
-                        "This probe MUST be pure MMDB2 — no `gemmi::` types, no "
-                        "`#include <gemmi/...>`, no Gemmi helpers anywhere. "
-                        "Rewrite the probe using only MMDB2 and the real coot header "
-                        "for the function under test.\n\n"
-                        f"Previous (rejected) source:\n```cpp\n{source}\n```"
-                    )
-                continue  # on the last attempt this exits the loop → final done
-
+        # ── 2. Sanity-check before wasting a compile ──────────────────────
+        rejection = _validate_probe_source(source)
+        if rejection is not None:
             last_source = source
-            probe_src.write_text(source)
-            yield {"type": "info", "text": f"prompt → {prompt}"}
-
-            # ── 2. Compile ───────────────────────────────────────────────────
-            cmd = _make_compile_cmd(probe_src, probe_bin)
-            yield {"type": "compile_cmd", "cmd": cmd}
-            t0 = time.monotonic()
-            compile_ok, compile_out = await _compile_probe(cmd)
-            compile_elapsed = time.monotonic() - t0
-            yield {
-                "type": "compile_out",
-                "ok": compile_ok,
-                "text": compile_out,
-                "elapsed_s": round(compile_elapsed, 2),
-            }
-
-            if not compile_ok:
-                last_error = compile_out
-                if attempt < MAX_PROBE_RETRIES:
-                    yield {"type": "retry", "attempt": attempt, "reason": "compile failed"}
-                    prompt = (
-                        f"{base_prompt}\n\n"
-                        f"Your previous probe failed to compile. Error:\n```\n{compile_out[:2000]}\n```\n"
-                        f"Previous source:\n```cpp\n{source}\n```\n"
-                        "Fix the problem and output the full corrected probe source."
-                    )
-                    continue
-                yield {"type": "done", "result": ProbeResult(
-                    ok=False, raw_stdout=compile_out, probe_lines=[],
-                    probe_source=source, attempts=attempt, stage="compile",
-                )}
-                return
-
-            # ── 3. Run ───────────────────────────────────────────────────────
-            yield {"type": "run_cmd", "cmd": f"{probe_bin} {pdb}", "pdb": pdb}
-            t0 = time.monotonic()
-            run_ok, run_out = await _run_probe(probe_bin, pdb)
-            run_elapsed = time.monotonic() - t0
-            probe_lines = _extract_probe_lines(run_out)
-            yield {
-                "type": "run_out",
-                "ok": run_ok,
-                "text": run_out,
-                "probe_lines": probe_lines,
-                "elapsed_s": round(run_elapsed, 2),
-            }
-
-            if run_ok and probe_lines:
-                yield {"type": "done", "result": ProbeResult(
-                    ok=True, raw_stdout=run_out, probe_lines=probe_lines,
-                    probe_source=source, attempts=attempt, stage="ok",
-                )}
-                return
-
-            last_error = run_out
+            last_error = f"probe rejected before compile: {rejection}"
+            yield {"type": "info", "text": f"rejected ({rejection}) — retrying"}
             if attempt < MAX_PROBE_RETRIES:
-                reason = "no PROBE: lines emitted" if run_ok else "probe exited non-zero"
-                yield {"type": "retry", "attempt": attempt, "reason": reason}
-                hint = ("No PROBE: lines were printed — remember every output line must start with 'PROBE: '."
-                        if run_ok else
-                        f"The probe exited with an error. Output:\n```\n{run_out[:2000]}\n```")
-                prompt = (
-                    f"{base_prompt}\n\n"
-                    f"Your previous probe compiled but did not produce usable output. {hint}\n"
-                    f"Previous source:\n```cpp\n{source}\n```\n"
-                    "Fix the problem and output the full corrected probe source."
-                )
+                yield {"type": "retry", "attempt": attempt, "reason": rejection}
+                prompt = _retry_prompt_for_rejection(base_prompt, rejection, source)
+            continue
 
-        yield {"type": "done", "result": ProbeResult(
-            ok=False, raw_stdout=last_error, probe_lines=[],
-            probe_source=last_source, attempts=MAX_PROBE_RETRIES, stage="run",
-        )}
+        last_source = source
+        probe_src.write_text(source)
+
+        # ── 3. Compile ────────────────────────────────────────────────────
+        cmd = _make_compile_cmd(probe_src, probe_bin)
+        yield {"type": "compile_cmd", "cmd": cmd}
+
+        t0 = time.monotonic()
+        compile_ok, compile_out = await _compile_probe(cmd)
+        yield {
+            "type":      "compile_out",
+            "ok":        compile_ok,
+            "text":      compile_out,
+            "elapsed_s": round(time.monotonic() - t0, 2),
+        }
+
+        if not compile_ok:
+            last_error = compile_out
+            if attempt < MAX_PROBE_RETRIES:
+                yield {"type": "retry", "attempt": attempt, "reason": "compile failed"}
+                prompt = _retry_prompt_for_compile_error(base_prompt, compile_out, source)
+                continue
+            yield {"type": "done", "result": ProbeResult(
+                ok=False, raw_stdout=compile_out, probe_lines=[],
+                probe_source=source, attempts=attempt, stage="compile",
+            )}
+            return
+
+        # ── 4. Run ────────────────────────────────────────────────────────
+        yield {"type": "run_cmd", "cmd": f"{probe_bin} {pdb}", "pdb": pdb}
+
+        t0 = time.monotonic()
+        run_ok, run_out = await _run_probe(probe_bin, pdb)
+        probe_lines = _extract_probe_lines(run_out)
+        yield {
+            "type":        "run_out",
+            "ok":          run_ok,
+            "text":        run_out,
+            "probe_lines": probe_lines,
+            "elapsed_s":   round(time.monotonic() - t0, 2),
+        }
+
+        if run_ok and probe_lines:
+            yield {"type": "done", "result": ProbeResult(
+                ok=True, raw_stdout=run_out, probe_lines=probe_lines,
+                probe_source=source, attempts=attempt, stage="ok",
+            )}
+            return
+
+        # ── 5. Run failed → feed error back into prompt and retry ─────────
+        last_error = run_out
+        if attempt < MAX_PROBE_RETRIES:
+            reason = "no PROBE: lines emitted" if run_ok else "probe exited non-zero"
+            yield {"type": "retry", "attempt": attempt, "reason": reason}
+            prompt = _retry_prompt_for_run_failure(base_prompt, source, run_out, run_ok)
+
+    # Fell off the end of the retry loop without ever succeeding.
+    yield {"type": "done", "result": ProbeResult(
+        ok=False, raw_stdout=last_error, probe_lines=[],
+        probe_source=last_source, attempts=MAX_PROBE_RETRIES, stage="run",
+    )}

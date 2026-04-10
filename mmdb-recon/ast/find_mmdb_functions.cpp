@@ -4,6 +4,8 @@
 #include "clang/Frontend/ASTConsumers.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
@@ -176,6 +178,59 @@ public:
 std::vector<FunctionInfo> g_allFunctions;
 std::set<std::string> g_allFiles;
 
+// Map from source file path -> ordered list of #include spellings ("header.h", <header.h>, etc.)
+// We use a map-of-set to deduplicate while still preserving insertion order in a
+// companion vector. Simplest: set for dedup + vector for order.
+struct IncludeList {
+  std::vector<std::string> order;
+  std::set<std::string> seen;
+  void add(const std::string& inc) {
+    if (seen.insert(inc).second) order.push_back(inc);
+  }
+};
+std::map<std::string, IncludeList> g_includesByFile;
+
+// PPCallbacks that records every #include directive seen in the main source
+// file (not in nested headers), along with how it was spelled in the source
+// so we can reproduce it exactly.
+class IncludeCapture : public PPCallbacks {
+public:
+  IncludeCapture(SourceManager& SM) : SM_(SM) {}
+
+  void InclusionDirective(SourceLocation HashLoc,
+                          const Token& /*IncludeTok*/,
+                          StringRef FileName,
+                          bool IsAngled,
+                          CharSourceRange /*FilenameRange*/,
+                          OptionalFileEntryRef /*File*/,
+                          StringRef /*SearchPath*/,
+                          StringRef /*RelativePath*/,
+                          const Module* /*SuggestedModule*/,
+                          bool /*ModuleImported*/,
+                          SrcMgr::CharacteristicKind /*FileType*/) override {
+    // Only capture includes that appear directly in the translation unit's
+    // main source file — skip anything transitively pulled in.
+    if (!SM_.isInMainFile(HashLoc)) return;
+    FileID mainID = SM_.getMainFileID();
+    const FileEntry* mainFE = SM_.getFileEntryForID(mainID);
+    if (!mainFE) return;
+    std::string mainPath = mainFE->tryGetRealPathName().str();
+    if (mainPath.empty()) {
+      // tryGetRealPathName may be empty for in-memory files; fall back to
+      // the filename the SourceManager knows about for the main file.
+      mainPath = SM_.getFilename(SM_.getLocForStartOfFile(mainID)).str();
+    }
+
+    std::string spelled = IsAngled
+      ? "<" + FileName.str() + ">"
+      : "\"" + FileName.str() + "\"";
+    g_includesByFile[mainPath].add(spelled);
+  }
+
+private:
+  SourceManager& SM_;
+};
+
 // Custom consumer that stores results when destroyed
 class MmdbConsumerWithCleanup : public MmdbConsumer {
 public:
@@ -194,6 +249,10 @@ class MmdbAction : public ASTFrontendAction {
 public:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance& CI,
                                                   StringRef file) override {
+    // Register a preprocessor callback to capture every #include directive
+    // seen in the main source file of this translation unit.
+    Preprocessor& pp = CI.getPreprocessor();
+    pp.addPPCallbacks(std::make_unique<IncludeCapture>(CI.getSourceManager()));
     return std::make_unique<MmdbConsumerWithCleanup>();
   }
 };
@@ -294,7 +353,23 @@ int main(int argc, const char** argv) {
 
     fileObj["rel_path"] = relPath;
     fileObj["includes_mmdb"] = true;
-    fileObj["mmdb_includes"] = llvm::json::Array{};
+
+    // All #include directives captured from this file's main translation unit,
+    // in source order, each spelled as it appears in the source
+    // (e.g. "\"coot-utils/coot-coord-utils.hh\"" or "<mmdb2/mmdb_manager.h>").
+    llvm::json::Array includesArray;
+    llvm::json::Array mmdbIncludesArray;
+    auto it = g_includesByFile.find(filePath);
+    if (it != g_includesByFile.end()) {
+      for (const auto& inc : it->second.order) {
+        includesArray.push_back(inc);
+        // Convenience subset: anything that mentions mmdb2 / mmdb_.
+        if (inc.find("mmdb") != std::string::npos)
+          mmdbIncludesArray.push_back(inc);
+      }
+    }
+    fileObj["includes"]       = std::move(includesArray);
+    fileObj["mmdb_includes"]  = std::move(mmdbIncludesArray);
 
     int fileTotalRefs = 0;
     llvm::json::Array functionsArray;
