@@ -43,7 +43,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-6"
-DEFAULT_OLLAMA_MODEL    = "llama3.1"
+DEFAULT_OLLAMA_MODEL    = "gemma4"
 DEFAULT_OLLAMA_URL      = "http://localhost:11434"
 RATE_LIMIT_DELAY        = 1.0
 
@@ -62,26 +62,30 @@ class LLMBackend(ABC):
 
 
 class AnthropicBackend(LLMBackend):
-    def __init__(self, model: str, api_key: str) -> None:
+    def __init__(self, model: str, api_key: str, think: bool = True) -> None:
         import anthropic
         self._client    = anthropic.Anthropic(api_key=api_key)
         self._model     = model
         self._anthropic = anthropic
+        self._think     = think
 
     @property
     def label(self) -> str:
-        return f"Claude ({self._model})"
+        suffix = "" if self._think else " (thinking off)"
+        return f"Claude ({self._model}){suffix}"
 
     def complete(self, system: str, user: str, max_tokens: int) -> str:
+        kwargs: dict = dict(
+            model=self._model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        if self._think:
+            kwargs["thinking"] = {"type": "adaptive"}
         while True:
             try:
-                with self._client.messages.stream(
-                    model=self._model,
-                    max_tokens=max_tokens,
-                    thinking={"type": "adaptive"},
-                    system=system,
-                    messages=[{"role": "user", "content": user}],
-                ) as stream:
+                with self._client.messages.stream(**kwargs) as stream:
                     final = stream.get_final_message()
                 for block in reversed(final.content):
                     if block.type == "text":
@@ -93,7 +97,8 @@ class AnthropicBackend(LLMBackend):
 
 
 class OllamaBackend(LLMBackend):
-    def __init__(self, model: str, base_url: str = DEFAULT_OLLAMA_URL) -> None:
+    def __init__(self, model: str, base_url: str = DEFAULT_OLLAMA_URL,
+                 think: bool = True) -> None:
         try:
             import httpx
         except ImportError:
@@ -102,6 +107,7 @@ class OllamaBackend(LLMBackend):
         self._httpx    = httpx
         self._model    = model
         self._base_url = base_url.rstrip("/")
+        self._think    = think
         self._check_connection()
 
     def _check_connection(self) -> None:
@@ -113,10 +119,15 @@ class OllamaBackend(LLMBackend):
 
     @property
     def label(self) -> str:
-        return f"Ollama ({self._model} @ {self._base_url})"
+        suffix = "" if self._think else " (thinking off)"
+        return f"Ollama ({self._model} @ {self._base_url}){suffix}"
 
     def complete(self, system: str, user: str, max_tokens: int) -> str:
-        payload = {
+        # Doc generation is reasoning-heavy: classify each method as static vs
+        # instance, infer semantics from name+signature. We enable `think: true`
+        # by default so reasoning-capable models actually reason. Ollama silently
+        # ignores `think` on models that don't support it, so this is safe.
+        payload: dict = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system},
@@ -125,6 +136,9 @@ class OllamaBackend(LLMBackend):
             "stream": True,
             "options": {"num_predict": max_tokens},
         }
+        if self._think:
+            payload["think"] = True
+
         chunks: list[str] = []
         with self._httpx.stream("POST", f"{self._base_url}/api/chat",
                                 json=payload, timeout=600) as response:
@@ -136,6 +150,11 @@ class OllamaBackend(LLMBackend):
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # Ollama puts the visible answer in message.content and the
+                # reasoning trace (when `think: true`) in message.thinking.
+                # We deliberately drop thinking — the doc generator only needs
+                # the final markdown — but it still helps the model produce
+                # better classifications.
                 chunks.append(data.get("message", {}).get("content", ""))
                 if data.get("done"):
                     break
@@ -262,13 +281,43 @@ def extract_class_body(header_text: str, class_name: str) -> "str | None":
     return header_text[m.start():]  # unclosed — return remainder
 
 
-def filter_to_relevant_methods(class_body: str, wanted_methods: set[str]) -> str:
+def find_static_methods(class_body: str, wanted_methods: set[str]) -> set[str]:
+    """Return the subset of `wanted_methods` declared `static` in this class.
+
+    The model keeps writing `mmdb::Manager::GetModel(1)` for instance methods,
+    so we need to know unambiguously which methods can legitimately be called
+    via `ClassName::method(...)` and which must go through a receiver.
+
+    Heuristic: for each method, look for a token sequence
+        static  <stuff that is not ; { }>  methodName (
+    inside the class body. The forbidden characters stop us crossing into a
+    neighbouring declaration or an inline function body, while still allowing
+    multi-line `static\\nReturnType foo();` declarations.
+    """
+    if not wanted_methods:
+        return set()
+    static: set[str] = set()
+    for meth in wanted_methods:
+        pattern = rf"\bstatic\b[^;{{}}]*\b{re.escape(meth)}\s*\("
+        if re.search(pattern, class_body, re.DOTALL):
+            static.add(meth)
+    return static
+
+
+def filter_to_relevant_methods(
+    class_body: str,
+    wanted_methods: set[str],
+    static_methods: set[str],
+) -> str:
     """
     Within a class body, mark lines that contain a wanted method name so the LLM
     knows which ones to focus on.  We don't strip other lines — the full context
     helps the LLM understand signatures — but we prepend a comment on matched lines.
 
-    Returns the class body with '// *** USED ***' annotations added.
+    Static methods get an extra `*** STATIC ***` tag so the LLM can carry that
+    fact through into the generated `Receiver:` line.
+
+    Returns the class body with annotations added.
     """
     if not wanted_methods:
         return class_body
@@ -276,11 +325,13 @@ def filter_to_relevant_methods(class_body: str, wanted_methods: set[str]) -> str
     lines = class_body.splitlines()
     annotated = []
     for line in lines:
-        # Check if any wanted method name appears on this line
-        if any(meth in line for meth in wanted_methods):
-            annotated.append(f"{line}  // *** USED IN COOT ***")
-        else:
+        matched = [m for m in wanted_methods if m in line]
+        if not matched:
             annotated.append(line)
+            continue
+        is_static = any(m in static_methods for m in matched)
+        tag = "// *** USED IN COOT — STATIC ***" if is_static else "// *** USED IN COOT ***"
+        annotated.append(f"{line}  {tag}")
     return "\n".join(annotated)
 
 
@@ -293,7 +344,11 @@ You are an expert C++ software engineer writing concise API reference \
 documentation for the MMDB2 structural biology library. \
 You will be given a C++ class declaration from an MMDB2 header file. \
 Lines annotated with '// *** USED IN COOT ***' are the methods you MUST \
-document. For all other methods you may write a one-line stub or omit them. \
+document. Lines annotated with '// *** USED IN COOT — STATIC ***' are the \
+ones declared `static` in the header — they are called via `ClassName::method(...)` \
+and have no receiver. All other annotated methods are instance methods and \
+must be called via an object: `obj->method(...)` or `obj.method(...)`. \
+For unannotated methods you may write a one-line stub or omit them. \
 Document behaviour from what the method name and signature imply — \
 these are well-established structural biology data-structure methods.\
 """
@@ -303,8 +358,16 @@ Class: `{class_name}`
 Methods that MUST be documented (from AST analysis of the Coot codebase):
 {method_list}
 
-Here is the C++ class declaration (lines marked '// *** USED IN COOT ***' \
-are the methods you must document in full):
+Static methods (called as `{class_name}::method(...)` — no receiver):
+{static_list}
+
+All other methods in the list above are INSTANCE methods and must be called \
+via an object: `obj->method(...)` or `obj.method(...)`. Never write \
+`{class_name}::method(...)` for an instance method.
+
+Here is the C++ class declaration. Lines marked '// *** USED IN COOT ***' are \
+instance methods you must document. Lines marked '// *** USED IN COOT — STATIC ***' \
+are static methods you must document:
 
 ```cpp
 {class_body}
@@ -315,16 +378,25 @@ no repeated field headers. Each method block looks like this:
 
 #### `ClassName::methodName(param_type param) -> return_type`
 One sentence describing what the method does.
+Receiver: instance — call as `obj->methodName(...)` (or `obj.methodName(...)`).
 Params: `param` — what it represents. Omit this line if there are no parameters.
 Returns: what is returned and under what conditions. Omit if void.
 Side effects: any state mutated or I/O performed. Omit if none.
 Errors: conditions under which it fails or returns null. Omit if none.
 
+For STATIC methods, the Receiver line MUST instead read exactly:
+Receiver: static — call as `{class_name}::methodName(...)` (no receiver).
+
 Rules:
 - Use `ClassName::methodName` in the heading (always qualify with the class name).
+- The `Receiver:` line is MANDATORY on every block — never omit it. It is the \
+single most important field, because the model consuming this doc has been \
+calling instance methods statically.
 - Keep each field to one line. Be direct — no filler words.
-- Omit any field whose answer would be "none" or "void" (saves space).
-- Repeat the block for every method marked '// *** USED IN COOT ***'.
+- Omit Params/Returns/Side effects/Errors when they would be "none" or "void" \
+(but never omit Receiver).
+- Repeat the block for every method marked '// *** USED IN COOT ***' or \
+'// *** USED IN COOT — STATIC ***'.
 - Skip all unmarked methods entirely.
 - Start your response with the class heading shown below.
 
@@ -364,17 +436,24 @@ def document_class(
     index: int,
     total: int,
 ) -> str:
-    annotated = filter_to_relevant_methods(class_body, wanted_methods)
+    static_methods = find_static_methods(class_body, wanted_methods)
+    annotated = filter_to_relevant_methods(class_body, wanted_methods, static_methods)
     method_list = "\n".join(f"  - {m}" for m in sorted(wanted_methods)) or "  (all public methods)"
+    static_list = (
+        "\n".join(f"  - {m}" for m in sorted(static_methods))
+        if static_methods
+        else "  (none — every method in the list above is an instance method)"
+    )
 
     user_prompt = METHOD_DOC_USER_TMPL.format(
         class_name=class_name,
         method_list=method_list,
+        static_list=static_list,
         class_body=annotated,
     )
 
     print(f"  [{index}/{total}] Documenting `{class_name}` "
-          f"({len(wanted_methods)} methods) ...", end=" ", flush=True)
+          f"({len(wanted_methods)} methods, {len(static_methods)} static) ...", end=" ", flush=True)
     try:
         docs = backend.complete(METHOD_DOC_SYSTEM, user_prompt, max_tokens=8192)
         print("done")
@@ -471,6 +550,17 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OLLAMA_URL,
         metavar="URL",
     )
+    provider_group.add_argument(
+        "--no-think",
+        action="store_true",
+        help=(
+            "Disable model thinking/reasoning. Default is on, because the doc "
+            "generator's job (classify static vs instance, infer semantics from "
+            "signatures) benefits from reasoning. Use this flag to fall back to "
+            "plain completions for speed or for models that don't support "
+            "thinking."
+        ),
+    )
     parser.add_argument(
         "--skip-classes",
         nargs="*",
@@ -482,15 +572,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_backend(args: argparse.Namespace) -> LLMBackend:
+    think = not args.no_think
     if args.provider == "ollama":
         return OllamaBackend(model=args.model or DEFAULT_OLLAMA_MODEL,
-                             base_url=args.ollama_url)
+                             base_url=args.ollama_url,
+                             think=think)
     model   = args.model or DEFAULT_ANTHROPIC_MODEL
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print("Error: ANTHROPIC_API_KEY not set.", file=sys.stderr)
         sys.exit(1)
-    return AnthropicBackend(model=model, api_key=api_key)
+    return AnthropicBackend(model=model, api_key=api_key, think=think)
 
 
 def main() -> None:

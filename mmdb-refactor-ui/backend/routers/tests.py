@@ -47,7 +47,12 @@ from pipeline import (
     run_oracle_for_function,
     stream_test_generation,
 )
-from prompts import build_generate_test, parse_both_sections, strip_fences
+from prompts import (
+    build_generate_test,
+    parse_both_sections,
+    strip_fences,
+    system_context_for_test_target,
+)
 from storage import load_tests, save_tests
 from test_utils import get_test_file_path, wrap_test_content
 
@@ -455,7 +460,10 @@ async def generate_all_tests(req: GenerateAllRequest):
                     probe_source=probe_src,
                     probe_pdb_path=PROBE_PDB_PATH,
                 )
-                raw = await call_ollama(req.model, prompt)
+                raw = await call_ollama(
+                    req.model, prompt,
+                    system=system_context_for_test_target("both"),
+                )
                 mmdb_raw, gemmi_raw = parse_both_sections(raw)
                 initial = {
                     "mmdb":  strip_fences(mmdb_raw),

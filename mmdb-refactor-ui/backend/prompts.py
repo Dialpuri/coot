@@ -10,6 +10,7 @@ from pathlib import Path
 from string import Template
 
 import doc_extractor
+from call_sites import format_call_sites_for_prompt
 from config import MAX_TEST_RETRIES
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -41,6 +42,45 @@ PROBE_SYSTEM_CONTEXT: str = (
     "never hand-build synthetic mmdb structures.\n"
 )
 
+# System prompt for MMDB-only test generation. The default STRATEGY_CONTEXT is
+# all about migrating MMDB → Gemmi, so it pushes the model to set up a gemmi
+# structure even when the user explicitly asked for an MMDB test. This prompt
+# pins the model to MMDB-only output.
+MMDB_TEST_SYSTEM_CONTEXT: str = (
+    "You are an expert C++ developer writing a Google Test for an EXISTING "
+    "MMDB2-based function. This is NOT a refactor and NOT a migration.\n\n"
+    "CRITICAL RULES:\n"
+    "- Use MMDB2 types ONLY. Do NOT emit `gemmi::` types, "
+    "`#include <gemmi/...>`, `gemmi::read_structure_file`, or any other "
+    "Gemmi code anywhere in the test. The test must be pure MMDB.\n"
+    "- The ONLY MMDB header you need is `#include <mmdb2/mmdb_manager.h>` "
+    "plus the function's own header. Do not include `mmdb_model.h`, "
+    "`mmdb_chain.h`, `mmdb_atom.h`, `mmdb_root.h`, or any other mmdb "
+    "header — those paths do not exist as standalone public headers.\n"
+    "- Every MMDB type MUST be qualified with `mmdb::`: `mmdb::Manager`, "
+    "`mmdb::Model*`, `mmdb::Chain*`, `mmdb::Residue*`, `mmdb::Atom*`, "
+    "`mmdb::Error_NoError`. There is no `using namespace mmdb;` — "
+    "unqualified types will not compile.\n"
+    "- Load molecular data by having `mmdb::Manager::ReadCoorFile` parse a "
+    "real PDB file. Do NOT hand-build synthetic mmdb structures.\n"
+    "- Do NOT mock the function under test. Call its real declaration "
+    "directly.\n"
+)
+
+# System prompt for the "both" target — produces both an MMDB test and a
+# Gemmi test in one shot. Here gemmi IS allowed (in the gemmi block only),
+# so we keep the migration-style framing.
+BOTH_TEST_SYSTEM_CONTEXT: str = (
+    "You are an expert C++ developer writing a pair of Google Tests for a "
+    "function that exists in MMDB2 today and will be ported to Gemmi.\n\n"
+    "Output two TEST() blocks:\n"
+    "  1. An MMDB block that uses MMDB2 types ONLY (no gemmi anywhere).\n"
+    "  2. A Gemmi block that uses Gemmi types ONLY (no mmdb anywhere).\n\n"
+    "Do not mix the two libraries inside a single TEST() block. Both blocks "
+    "load a real PDB file from disk and assert against the measured oracle "
+    "values supplied in the prompt — never invent expected numbers.\n"
+)
+
 # ── Templates (loaded once) ───────────────────────────────────────────────────
 _T_REFACTOR          = _load("refactor.txt")
 _T_TEST_MMDB         = _load("generate_test_mmdb.txt")
@@ -64,6 +104,16 @@ def init_docs(path: str) -> None:
         print(f"Loaded MMDB docs from {path} ({len(_mmdb_docs_markdown):,} chars)")
     else:
         print(f"WARNING: MMDB docs not found at {path} — prompts will lack API context")
+
+
+def _call_sites_context(symbols: list[str]) -> str:
+    """Wrap `call_sites.format_call_sites_for_prompt` so a missing index or
+    walk failure can never break prompt construction."""
+    try:
+        return format_call_sites_for_prompt(symbols)
+    except Exception as ex:
+        print(f"call_sites: failed to gather examples ({ex}) — continuing without them")
+        return ""
 
 
 def _api_context(symbols: list[str]) -> str:
@@ -214,7 +264,14 @@ def _format_header_include(rel_source_path: str) -> str:
         "`mmdb::Residue`, `mmdb::Atom`, and the file-loading API. Do NOT "
         "`#include <mmdb2/mmdb_model.h>`, `<mmdb2/mmdb_chain.h>`, "
         "`<mmdb2/mmdb_atom.h>`, `<mmdb2/mmdb_root.h>`, or any other mmdb "
-        "header — those paths do not exist."
+        "header — those paths do not exist.\n\n"
+        "Every MMDB type MUST be written with the `mmdb::` namespace prefix "
+        "on first use and every use after that — write `mmdb::Manager`, "
+        "`mmdb::Model*`, `mmdb::Chain*`, `mmdb::Residue*`, `mmdb::Atom*`, "
+        "`mmdb::Error_NoError`. There is no `using namespace mmdb;` in coot "
+        "test code, so an unqualified `Manager` or `Chain*` will not "
+        "compile. Constants like `mmdb::Error_NoError` and `mmdb::PPAtom` "
+        "are also in the `mmdb` namespace."
     )
 
     if not rel_source_path:
@@ -260,6 +317,20 @@ def build_refactor(function_name: str, code: str, mmdb_symbols: list[str],
     )
 
 
+def system_context_for_test_target(target: str) -> str:
+    """Return the right system prompt for an `/api/generate-test` target.
+
+    - "mmdb"  → pure MMDB framing, no gemmi at all
+    - "gemmi" → MMDB→Gemmi strategy context (the gemmi test is the migration)
+    - "both"  → dual-block framing where each block stays in its own library
+    """
+    if target == "mmdb":
+        return MMDB_TEST_SYSTEM_CONTEXT
+    if target == "both":
+        return BOTH_TEST_SYSTEM_CONTEXT
+    return STRATEGY_CONTEXT
+
+
 def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list[str],
                         target: str, additional_instructions: str = "",
                         oracle_output: str = "",
@@ -288,6 +359,7 @@ def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list
         symbols_list=", ".join(mmdb_symbols) if mmdb_symbols else "none",
         additional_instructions=_additional(additional_instructions),
         api_context=_api_context(mmdb_symbols),
+        call_sites=_call_sites_context(mmdb_symbols),
         source_code=source_code,
         gtest_style=GTEST_STYLE,
         oracle_values=_format_oracle(oracle_output),
@@ -361,6 +433,7 @@ def build_probe_mmdb(function_name: str, source_code: str,
         symbols_list=", ".join(mmdb_symbols) if mmdb_symbols else "none",
         additional_instructions=_additional(additional_instructions),
         api_context=_api_context(merged_symbols),
+        call_sites=_call_sites_context(merged_symbols),
         source_code=source_code,
         header_include=_format_header_include(rel_source_path),
         file_includes=_format_file_includes(rel_source_path),
@@ -426,7 +499,16 @@ def _format_probe_reference(probe_source: str, pdb_path: str) -> str:
 def build_fix(fn_name: str, variant: str, current_code: str,
               error: str, attempt: int) -> str:
     if variant == "mmdb":
-        inc_hint = "Required headers:\n#include <gtest/gtest.h>\n#include <mmdb2/mmdb_manager.h>\n#include <gemmi/structure.hpp>"
+        inc_hint = (
+            "Required headers (use ONLY these — do not add other mmdb headers):\n"
+            "#include <gtest/gtest.h>\n"
+            "#include <mmdb2/mmdb_manager.h>\n"
+            "\n"
+            "Every MMDB type MUST be qualified with `mmdb::` — write "
+            "`mmdb::Manager`, `mmdb::Model*`, `mmdb::Chain*`, "
+            "`mmdb::Residue*`, `mmdb::Atom*`, `mmdb::Error_NoError`. "
+            "Unqualified `Manager` / `Chain*` will not compile."
+        )
     else:
         inc_hint = ("Required headers:\n#include <gtest/gtest.h>\n"
                     "#include <gemmi/structure.hpp>\n#include <gemmi/model.hpp>")

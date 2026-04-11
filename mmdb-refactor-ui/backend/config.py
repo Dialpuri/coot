@@ -29,13 +29,6 @@ _parser.add_argument(
     help="Path to a real PDB file used by oracle probes to measure function output",
 )
 _parser.add_argument(
-    "--stream-llm",
-    action="store_true",
-    help="DEV: stream LLM responses in the probe pipeline so each token is "
-         "visible in the console as it arrives (useful for debugging; adds a "
-         "small per-chunk framing overhead but no extra compute).",
-)
-_parser.add_argument(
     "--no-think",
     action="store_true",
     help="Disable Ollama's `think: true` flag. Only set this if your chosen "
@@ -66,7 +59,6 @@ MAX_TEST_RETRIES  = 5
 PROBE_PDB_PATH    = args.probe_pdb
 PROBE_WORKDIR     = Path(args.probe_workdir)
 MAX_PROBE_RETRIES = 3
-DEV_STREAM_LLM    = args.stream_llm
 LLM_THINK         = not args.no_think
 
 # ── GTest detection ───────────────────────────────────────────────────────────

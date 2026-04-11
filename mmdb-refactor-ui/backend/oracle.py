@@ -51,14 +51,8 @@ from typing import AsyncIterator
 
 import report
 from compiler import make_probe_compile_cmd
-from config import (
-    DEV_STREAM_LLM,
-    MAX_PROBE_RETRIES,
-    PROBE_PDB_PATH,
-    PROBE_WORKDIR,
-    args,
-)
-from ollama import call_ollama, stream_ollama
+from config import MAX_PROBE_RETRIES, PROBE_PDB_PATH, PROBE_WORKDIR, args
+from ollama import stream_ollama
 from prompts import PROBE_SYSTEM_CONTEXT, build_probe_mmdb, strip_fences
 
 
@@ -115,11 +109,17 @@ async def _ask_llm_for_probe(
     prompt: str,
     attempt: int,
 ) -> AsyncIterator[dict]:
-    """Wrap an Ollama call so it yields the same event shape regardless of
-    whether we are streaming.
+    """Stream a probe `main()` from the LLM.
 
-    Yields zero or more `llm_thinking` / `llm_chunk` events while the model
-    talks, then exactly one `llm_response` event with the full source.
+    The probe is the most important LLM call in the whole pipeline — it
+    grounds every downstream test in real measured values — so we ALWAYS
+    stream it. That keeps the response chunks visible in the UI as they
+    arrive AND surfaces any `thinking` chunks from a reasoning model so we
+    can watch it work through the API before it commits to code.
+
+    Yields zero or more `llm_thinking` / `llm_chunk` events while the
+    model talks, then exactly one `llm_response` event carrying the
+    fence-stripped probe source.
     """
     yield {
         "type":         "llm_call",
@@ -127,27 +127,22 @@ async def _ask_llm_for_probe(
         "max":          MAX_PROBE_RETRIES,
         "model":        model,
         "prompt_chars": len(prompt),
-        "streaming":    DEV_STREAM_LLM,
+        "streaming":    True,
     }
 
     t0 = time.monotonic()
+    parts: list[str] = []
+    try:
+        async for evt in stream_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT):
+            if evt["kind"] == "thinking":
+                yield {"type": "llm_thinking", "attempt": attempt, "text": evt["text"]}
+            else:
+                parts.append(evt["text"])
+                yield {"type": "llm_chunk", "attempt": attempt, "text": evt["text"]}
+    except Exception as ex:
+        yield {"type": "info", "text": f"LLM stream error: {ex}"}
 
-    if DEV_STREAM_LLM:
-        parts: list[str] = []
-        try:
-            async for evt in stream_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT):
-                if evt["kind"] == "thinking":
-                    yield {"type": "llm_thinking", "attempt": attempt, "text": evt["text"]}
-                else:
-                    parts.append(evt["text"])
-                    yield {"type": "llm_chunk", "attempt": attempt, "text": evt["text"]}
-        except Exception as ex:
-            yield {"type": "info", "text": f"LLM stream error: {ex}"}
-        raw = "".join(parts)
-    else:
-        raw = await call_ollama(model, prompt, system=PROBE_SYSTEM_CONTEXT)
-
-    source = strip_fences(raw).strip()
+    source = strip_fences("".join(parts)).strip()
     yield {
         "type":         "llm_response",
         "attempt":      attempt,

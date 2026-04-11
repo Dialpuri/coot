@@ -8,6 +8,7 @@ $additional_instructions
 
 ## API reference (use ONLY what is documented here — do not invent functions, types, or members)
 $api_context
+$call_sites
 $header_include
 $file_includes
 $probe_reference
@@ -38,6 +39,11 @@ $oracle_values
   the function's own header. Do not include `mmdb_model.h`, `mmdb_chain.h`,
   `mmdb_atom.h`, `mmdb_root.h`, or any other mmdb header — those paths do
   not exist as standalone public headers.
+- Every MMDB type MUST be written with the `mmdb::` namespace prefix:
+  `mmdb::Manager`, `mmdb::Model*`, `mmdb::Chain*`, `mmdb::Residue*`,
+  `mmdb::Atom*`, `mmdb::Error_NoError`. There is no `using namespace mmdb;`
+  in coot test code, so an unqualified `Manager` or `Chain*` will not
+  compile.
 - Use ONLY symbols and members that appear in the API reference above, the
   function source code, or the working probe. Do not invent function names,
   member names, or types.

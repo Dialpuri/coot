@@ -1,14 +1,20 @@
-## Google Test Style Guide
+## Google Test Style Guide (MMDB)
 
 ### Core principle: no mocking — use real data files
 
-Do NOT construct synthetic in-memory structures (e.g. manually building an mmdb::Manager or gemmi::Structure by hand) unless the function under test is completely trivial and requires no real molecular data.
+Do NOT construct synthetic in-memory structures (e.g. manually building an
+`mmdb::Manager` by hand) unless the function under test is completely
+trivial and requires no real molecular data.
 
-Instead, load a real PDB or mmCIF file from disk and let the library parse it. This ensures the test exercises the function against realistic, well-formed data.
+Instead, load a real PDB or mmCIF file from disk and let MMDB parse it.
+This ensures the test exercises the function against realistic, well-formed
+data.
 
 ### Loading data
 
-MMDB variant — read a PDB/mmCIF file via the manager:
+Read a PDB / mmCIF file via the manager — this is the only loading pattern
+you should use:
+
 ```cpp
 mmdb::Manager mgr;
 int rc = mgr.ReadCoorFile("path/to/test.pdb");
@@ -17,59 +23,56 @@ mmdb::Model* model = mgr.GetModel(1);
 ASSERT_NE(model, nullptr);
 ```
 
-Gemmi variant — read a structure file via gemmi:
-```cpp
-gemmi::Structure st = gemmi::read_structure_file("path/to/test.pdb");
-ASSERT_FALSE(st.models.empty());
-gemmi::Model& model = st.models[0];
-```
+The test data file path should be expressed as a compile-time constant or
+passed via a command-line argument / environment variable so the test is
+portable:
 
-The test data file path should be expressed as a compile-time constant or passed via a command-line argument / environment variable so the test is portable:
 ```cpp
 static const char* TEST_PDB = TEST_DATA_DIR "/test.pdb";
 ```
 
-### Establishing expected values: run MMDB first as the oracle
+### Establishing expected values: use the oracle output
 
-Do NOT guess or hardcode expected output values. Instead, call the original MMDB function on the real data to obtain the ground-truth result, then assert that the Gemmi-refactored function produces the same result.
+Do NOT guess or hardcode expected output values. The probe oracle has
+already run the function on a real PDB file and captured its output —
+those measured values are provided to you in the prompt as `PROBE: ...`
+lines. Assert against THOSE numbers, not numbers you make up.
 
 Pattern for a function that returns a value:
 ```cpp
-// 1. Run MMDB version — this is the oracle
 mmdb::Manager mgr;
 ASSERT_EQ(mgr.ReadCoorFile(TEST_PDB), mmdb::Error_NoError);
-auto expected = mmdb_version_of_function(mgr.GetModel(1), ...);
-
-// 2. Run Gemmi version — must match
-gemmi::Structure st = gemmi::read_structure_file(TEST_PDB);
-auto actual = gemmi_version_of_function(st.models[0], ...);
-
-EXPECT_EQ(actual, expected);
+auto result = function_under_test(mgr.GetModel(1), ...);
+EXPECT_EQ(result, /* value from PROBE: line in the prompt */);
 ```
 
 Pattern for a function that modifies a structure in-place:
 ```cpp
-// Run MMDB, capture observable state after the call
-// Run Gemmi, assert the same observable state
+// Run the function, then assert the observable post-state matches the
+// PROBE: lines from the oracle.
 ```
-
-This oracle pattern means the test assertions are always derived from real execution, not from the test author's assumptions.
 
 ### What the test should do
 
 1. Load the data file (assert success).
-2. Obtain the relevant sub-object (model / chain / residue / atom) that the function needs.
-3. Call the MMDB version of the function to get the ground-truth output.
-4. Call the Gemmi version of the function with equivalent inputs.
-5. Assert the Gemmi output matches the MMDB oracle using `EXPECT_*` / `ASSERT_*` macros.
-6. Do not mock any part of the molecular hierarchy — if the function needs a chain, pull a real chain out of the loaded structure.
+2. Obtain the relevant sub-object (model / chain / residue / atom) the
+   function needs, by walking the mmdb hierarchy with `GetModel`,
+   `GetChain`, `GetResidue`, `GetAtom`.
+3. Call the function under test with those real inputs.
+4. Assert the output matches the PROBE: lines using `EXPECT_EQ` /
+   `EXPECT_NEAR` / `EXPECT_STREQ`.
 
 ### Forbidden patterns
 
-- `MOCK_METHOD` / gmock stubs for molecular objects
-- Manually calling `mmdb::Model::AddChain`, `AddResidue`, `AddAtom` etc. to build a fake structure from scratch (unless the function itself is a constructor/builder)
-- Hardcoding atom coordinates, residue names, or expected return values as magic numbers — derive them by running the MMDB function
-- `NiceMock`, `StrictMock`, or any mock framework header for mmdb/gemmi types
+- `MOCK_METHOD` / gmock stubs for molecular objects.
+- Manually calling `mmdb::Model::AddChain`, `AddResidue`, `AddAtom` etc. to
+  build a fake structure from scratch (unless the function itself is a
+  constructor / builder).
+- Hardcoding atom coordinates, residue names, or expected return values as
+  magic numbers — derive them from the PROBE: lines.
+- Any reference to gemmi: no `gemmi::` types, no `#include <gemmi/...>`,
+  no `gemmi::read_structure_file`. The MMDB test must be pure MMDB.
+- `using namespace mmdb;` — every type must be qualified `mmdb::Foo`.
 
 ### TEST naming
 
@@ -77,4 +80,5 @@ This oracle pattern means the test assertions are always derived from real execu
 TEST(FunctionNameTest, DescriptiveScenario) { ... }
 ```
 
-Use one `TEST` block per logical scenario. Keep fixture classes (`TEST_F`) only when multiple tests share the same file-loading setup.
+Use one `TEST` block per logical scenario. Keep fixture classes (`TEST_F`)
+only when multiple tests share the same file-loading setup.

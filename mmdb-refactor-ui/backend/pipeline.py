@@ -31,11 +31,10 @@ from config import MAX_TEST_RETRIES
 from ollama import call_ollama, stream_ollama
 from oracle import ProbeResult, run_mmdb_oracle
 from prompts import (
-    PROBE_SYSTEM_CONTEXT,
-    STRATEGY_CONTEXT,
     build_fix,
     build_generate_test,
     strip_fences,
+    system_context_for_test_target,
 )
 from test_utils import wrap_test_content
 
@@ -150,12 +149,13 @@ async def stream_test_generation(
         probe_source=probe_source,
         probe_pdb_path=probe_pdb_path,
     )
+    system = system_context_for_test_target(target)
 
     yield {"type": "test_start"}
 
     parts: list[str] = []
     try:
-        async for evt in stream_ollama(model, prompt, system=STRATEGY_CONTEXT):
+        async for evt in stream_ollama(model, prompt, system=system):
             if evt["kind"] == "thinking":
                 yield {"type": "test_thinking", "text": evt["text"]}
             else:
