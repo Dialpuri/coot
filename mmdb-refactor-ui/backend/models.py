@@ -57,9 +57,10 @@ class GitCommitRequest(BaseModel):
 
 
 class GenerateAllRequest(BaseModel):
-    model: str = "gemma4"
+    model: str = "gemma4:31b"
     skip_existing: bool = True
     additional_instructions: str = ""
+    target: str = "mmdb"   # "mmdb" | "gemmi" | "both"
 
 
 class ValidateFixRequest(BaseModel):

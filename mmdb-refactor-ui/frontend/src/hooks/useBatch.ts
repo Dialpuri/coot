@@ -32,6 +32,7 @@ export interface BatchConfig {
   model: string
   skipExisting: boolean
   extraInstructions: string
+  target: string
 }
 
 const IDLE: BatchState = {
@@ -47,6 +48,7 @@ export function useBatch(onFinish: () => void) {
     model: 'gemma4',
     skipExisting: true,
     extraInstructions: '',
+    target: 'mmdb',
   })
   const [state, setState] = useState<BatchState>(IDLE)
   const abortRef = useRef<AbortController | null>(null)
@@ -60,6 +62,7 @@ export function useBatch(onFinish: () => void) {
         config.model,
         config.skipExisting,
         config.extraInstructions,
+        config.target,
         abortRef.current.signal,
       )
 

@@ -42,8 +42,8 @@ _cli_args, _ = _cli.parse_known_args()
 
 # ── Backend imports (config.py parses its own --report / --probe-pdb etc.) ───
 import report
-from config import MAX_TEST_RETRIES, PROBE_PDB_PATH
-from models import GenerateAllRequest
+import prompts
+from config import PROBE_PDB_PATH, REPORT_PATH, args
 from ollama import call_ollama
 from pipeline import (
     compile_run_fix_loop,
@@ -211,6 +211,8 @@ async def run_batch(
 
 
 if __name__ == "__main__":
+    report.load_and_update(REPORT_PATH)
+    prompts.init_docs(args.mmdb_docs)
     asyncio.run(run_batch(
         target=_cli_args.target,
         model=_cli_args.model,

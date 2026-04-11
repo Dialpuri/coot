@@ -42,7 +42,7 @@ export default function BatchGenPanel({ state, config, onConfigChange, onStart, 
         <div>
           <h2 className="text-sm font-semibold text-zinc-100">Batch Test Generation</h2>
           <p className="text-xs text-zinc-500 mt-0.5">
-            Generate MMDB + Gemmi tests for every function using Ollama
+            Generate tests for every function using Ollama
           </p>
         </div>
         <button onClick={onClose} className="btn btn-ghost btn-sm text-zinc-500" title="Hide panel (job continues running)">
@@ -62,6 +62,18 @@ export default function BatchGenPanel({ state, config, onConfigChange, onStart, 
                 onChange={e => onConfigChange({ ...config, model: e.target.value })}
                 className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-blue-500 w-36"
               />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Target</label>
+              <select
+                value={config.target}
+                onChange={e => onConfigChange({ ...config, target: e.target.value })}
+                className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-blue-500"
+              >
+                <option value="mmdb">MMDB only</option>
+                <option value="gemmi">Gemmi only</option>
+                <option value="both">Both</option>
+              </select>
             </div>
             <div className="flex flex-col gap-1 flex-1">
               <label className="text-xs text-zinc-500">Additional instructions (applied to every function)</label>

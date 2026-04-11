@@ -394,17 +394,21 @@ def _function_source(rel_path: str, fn_line: int, fn_end: int) -> str:
 
 @router.post("/api/tests/generate-all")
 async def generate_all_tests(req: GenerateAllRequest):
-    """Iterate every function, generate both tests, then compile/fix each.
+    """Iterate every function, generate tests, then compile/fix each.
 
     The work for one function is:
         1. probe the real MMDB function for ground-truth output (oracle)
-        2. ask the LLM for both MMDB and Gemmi tests in one shot
-        3. parse the response into two variants
-        4. for each variant: compile, run, and ask the LLM to fix on failure
+        2. ask the LLM for the requested test variant(s)
+        3. for each variant: compile, run, and ask the LLM to fix on failure
+
+    req.target controls which variants to generate: "mmdb" | "gemmi" | "both"
 
     Streams NDJSON: start | progress | skip | oracle_event | oracle |
                     attempt | done | error | finish
     """
+    target = req.target  # "mmdb" | "gemmi" | "both"
+    variants_to_run = ("mmdb", "gemmi") if target == "both" else (target,)
+
     async def stream_progress():
         tests = load_tests()
         work = [
@@ -425,10 +429,10 @@ async def generate_all_tests(req: GenerateAllRequest):
             mmdb_syms    = fn.get("mmdb_symbols", [])
             key = f"{rel_path}::{fn_name}:{fn_line}"
 
-            # ── Skip if both variants are already on disk ────────────────
+            # ── Skip if all requested variants are already on disk ───────
             if req.skip_existing:
                 rec = tests.get(key, {})
-                if rec.get("mmdb_test") and rec.get("gemmi_test"):
+                if all(rec.get(f"{v}_test") for v in variants_to_run):
                     skipped += 1
                     yield _ndjson({
                         "type": "skip", "key": key, "fn": fn_name, "file": rel_path,
@@ -444,56 +448,71 @@ async def generate_all_tests(req: GenerateAllRequest):
             try:
                 source = _function_source(rel_path, fn_line, fn_end)
 
-                # ── 1. Oracle probe ──────────────────────────────────────
+                # ── 1. Oracle probe (always run for mmdb/both) ───────────
                 probe = None
-                async for evt in run_oracle_for_function(
-                    model=req.model,
-                    function_name=fn_name,
-                    source_code=source,
-                    mmdb_symbols=mmdb_syms,
-                    additional_instructions=req.additional_instructions,
-                    rel_source_path=rel_path,
-                ):
-                    if evt["type"] == "pipeline_result":
-                        probe = evt["result"]
-                        continue
-                    # Tag every event with which function it belongs to.
-                    yield _ndjson({**evt, "key": key, "fn": fn_name, "file": rel_path})
+                if target in ("mmdb", "both"):
+                    async for evt in run_oracle_for_function(
+                        model=req.model,
+                        function_name=fn_name,
+                        source_code=source,
+                        mmdb_symbols=mmdb_syms,
+                        additional_instructions=req.additional_instructions,
+                        rel_source_path=rel_path,
+                    ):
+                        if evt["type"] == "pipeline_result":
+                            probe = evt["result"]
+                            continue
+                        yield _ndjson({**evt, "key": key, "fn": fn_name, "file": rel_path})
 
-                yield _ndjson({
-                    "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
-                    "ok":       bool(probe and probe.ok),
-                    "stage":    probe.stage    if probe else "none",
-                    "attempts": probe.attempts if probe else 0,
-                    "lines":    (probe.probe_lines[:50] if probe else []),
-                })
+                    yield _ndjson({
+                        "type": "oracle", "key": key, "fn": fn_name, "file": rel_path,
+                        "ok":       bool(probe and probe.ok),
+                        "stage":    probe.stage    if probe else "none",
+                        "attempts": probe.attempts if probe else 0,
+                        "lines":    (probe.probe_lines[:50] if probe else []),
+                    })
 
                 oracle_out = oracle_output_text(probe)
                 probe_src  = oracle_probe_source(probe)
 
-                # ── 2. Ask the LLM for both tests in one go ──────────────
-                prompt = build_generate_test(
-                    fn_name, source, mmdb_syms, "both",
-                    req.additional_instructions,
-                    oracle_output=oracle_out,
-                    rel_source_path=rel_path,
-                    probe_source=probe_src,
-                    probe_pdb_path=PROBE_PDB_PATH,
-                )
-                raw = await call_ollama(
-                    req.model, prompt,
-                    system=system_context_for_test_target("both"),
-                )
-                mmdb_raw, gemmi_raw = parse_both_sections(raw)
-                initial = {
-                    "mmdb":  strip_fences(mmdb_raw),
-                    "gemmi": strip_fences(gemmi_raw),
-                }
+                # ── 2. Generate test(s) ──────────────────────────────────
+                if target == "both":
+                    prompt = build_generate_test(
+                        fn_name, source, mmdb_syms, "both",
+                        req.additional_instructions,
+                        oracle_output=oracle_out,
+                        rel_source_path=rel_path,
+                        probe_source=probe_src,
+                        probe_pdb_path=PROBE_PDB_PATH,
+                    )
+                    raw = await call_ollama(
+                        req.model, prompt,
+                        system=system_context_for_test_target("both"),
+                    )
+                    mmdb_raw, gemmi_raw = parse_both_sections(raw)
+                    initial = {
+                        "mmdb":  strip_fences(mmdb_raw),
+                        "gemmi": strip_fences(gemmi_raw),
+                    }
+                else:
+                    prompt = build_generate_test(
+                        fn_name, source, mmdb_syms, target,
+                        req.additional_instructions,
+                        oracle_output=oracle_out,
+                        rel_source_path=rel_path,
+                        probe_source=probe_src,
+                        probe_pdb_path=PROBE_PDB_PATH,
+                    )
+                    raw = await call_ollama(
+                        req.model, prompt,
+                        system=system_context_for_test_target(target),
+                    )
+                    initial = {target: strip_fences(raw)}
 
                 # ── 3. Compile/run/fix each variant ──────────────────────
                 variant_results: dict[str, dict] = {}
-                for variant in ("mmdb", "gemmi"):
-                    code = initial[variant]
+                for variant in variants_to_run:
+                    code = initial.get(variant, "")
                     if not code.strip():
                         variant_results[variant] = {
                             "code": "", "status": "skip", "attempts": 0,

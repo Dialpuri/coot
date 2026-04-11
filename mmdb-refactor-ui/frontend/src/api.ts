@@ -163,12 +163,13 @@ export async function* generateAllTests(
   model: string,
   skipExisting: boolean,
   additionalInstructions: string,
+  target: string,
   signal?: AbortSignal,
 ): AsyncGenerator<BatchEvent> {
   const response = await fetch(`${BASE}/tests/generate-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, skip_existing: skipExisting, additional_instructions: additionalInstructions }),
+    body: JSON.stringify({ model, skip_existing: skipExisting, additional_instructions: additionalInstructions, target }),
     signal,
   })
   if (!response.ok) throw new Error(`Server error: ${response.status}`)
