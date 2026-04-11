@@ -12,6 +12,7 @@ from string import Template
 import doc_extractor
 from call_sites import format_call_sites_for_prompt
 from config import MAX_TEST_RETRIES
+from coot_types import format_coot_types_for_prompt
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -113,6 +114,16 @@ def _call_sites_context(symbols: list[str]) -> str:
         return format_call_sites_for_prompt(symbols)
     except Exception as ex:
         print(f"call_sites: failed to gather examples ({ex}) — continuing without them")
+        return ""
+
+
+def _coot_types_context(source_code: str) -> str:
+    """Wrap `coot_types.format_coot_types_for_prompt` so a parser blow-up
+    or missing tree can never break prompt construction."""
+    try:
+        return format_coot_types_for_prompt(source_code)
+    except Exception as ex:
+        print(f"coot_types: failed to gather definitions ({ex}) — continuing without them")
         return ""
 
 
@@ -360,6 +371,7 @@ def build_generate_test(function_name: str, source_code: str, mmdb_symbols: list
         additional_instructions=_additional(additional_instructions),
         api_context=_api_context(mmdb_symbols),
         call_sites=_call_sites_context(mmdb_symbols),
+        coot_types=_coot_types_context(source_code),
         source_code=source_code,
         gtest_style=GTEST_STYLE,
         oracle_values=_format_oracle(oracle_output),
@@ -434,6 +446,7 @@ def build_probe_mmdb(function_name: str, source_code: str,
         additional_instructions=_additional(additional_instructions),
         api_context=_api_context(merged_symbols),
         call_sites=_call_sites_context(merged_symbols),
+        coot_types=_coot_types_context(source_code),
         source_code=source_code,
         header_include=_format_header_include(rel_source_path),
         file_includes=_format_file_includes(rel_source_path),

@@ -15,6 +15,7 @@ $additional_instructions
 ## API reference (use ONLY what is documented here — do not invent functions, types, or members)
 $api_context
 $call_sites
+$coot_types
 $header_include
 $file_includes
 
