@@ -101,6 +101,20 @@ export async function writeTestFiles(
   return res.data
 }
 
+// ── Probe files ──────────────────────────────────────────────────────────────
+
+export interface ProbeFiles {
+  source: string
+  prompt: string
+  source_exists: boolean
+  prompt_exists: boolean
+}
+
+export async function fetchProbeFiles(): Promise<ProbeFiles> {
+  const res = await axios.get<ProbeFiles>(`${BASE}/probe/files`)
+  return res.data
+}
+
 // ── Prompt preview ────────────────────────────────────────────────────────────
 
 export interface PromptPreview {

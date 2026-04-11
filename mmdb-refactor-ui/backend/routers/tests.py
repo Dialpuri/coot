@@ -29,7 +29,7 @@ from fastapi.responses import StreamingResponse
 
 import report
 from compiler import make_compile_cmd
-from config import MAX_TEST_RETRIES, PROBE_PDB_PATH, args
+from config import MAX_TEST_RETRIES, PROBE_PDB_PATH, PROBE_WORKDIR, args
 from models import (
     CompileRunRequest,
     GenerateAllRequest,
@@ -62,6 +62,26 @@ router = APIRouter()
 def _ndjson(event: dict) -> str:
     """Encode an event as one NDJSON line."""
     return json.dumps(event) + "\n"
+
+
+# ── Probe files ──────────────────────────────────────────────────────────────
+
+@router.get("/api/probe/files")
+def get_probe_files():
+    """Return the current probe.cc source and probe_prompt.txt from the workdir.
+
+    These files are written by the oracle pipeline after every successful (or
+    final-attempt) probe run. Exposing them lets the UI show exactly what was
+    sent to the LLM and what C++ it produced, without needing to re-run anything.
+    """
+    src_path    = PROBE_WORKDIR / "probe.cc"
+    prompt_path = PROBE_WORKDIR / "probe_prompt.txt"
+    return {
+        "source":         src_path.read_text(errors="replace")    if src_path.exists()    else "",
+        "prompt":         prompt_path.read_text(errors="replace")  if prompt_path.exists() else "",
+        "source_exists":  src_path.exists(),
+        "prompt_exists":  prompt_path.exists(),
+    }
 
 
 # ── Basic CRUD ────────────────────────────────────────────────────────────────

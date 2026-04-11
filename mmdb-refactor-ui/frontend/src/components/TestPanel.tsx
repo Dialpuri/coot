@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { FileDetail, FunctionRecord } from '../types'
-import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles, validateAndFixTest, previewTestPrompt } from '../api'
-import type { TestFilePaths, PromptPreview } from '../api'
+import { fetchSource, saveTest, fetchTestFilePaths, writeTestFiles, fetchTestForFunction, gitCommitTestFiles, validateAndFixTest, previewTestPrompt, fetchProbeFiles } from '../api'
+import type { TestFilePaths } from '../api'
 import PromptModal from './PromptModal'
+import type { ModalSection } from './PromptModal'
 import { useHorizontalSplit } from '../hooks/useResize'
 import { highlightCppWithLines, highlightForEditor } from '../highlight'
 import Editor from 'react-simple-code-editor'
@@ -164,24 +165,51 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
   const [committing, setCommitting] = useState(false)
   const [validating, setValidating] = useState<false | 'mmdb' | 'gemmi'>(false)
 
-  const [promptPreview, setPromptPreview] = useState<PromptPreview | null>(null)
-  const [promptLoading, setPromptLoading] = useState(false)
-  const [promptError, setPromptError] = useState<string | null>(null)
-  const [promptTarget, setPromptTarget] = useState<'mmdb' | 'gemmi' | 'both'>('both')
+  const [modal, setModal] = useState<{
+    title: string
+    sections: ModalSection[] | null
+    loading: boolean
+    error: string | null
+  } | null>(null)
+
+  const closeModal = () => setModal(null)
 
   const showPrompt = async (target: 'mmdb' | 'gemmi' | 'both') => {
     if (!fn) return
-    setPromptTarget(target)
-    setPromptPreview(null)
-    setPromptError(null)
-    setPromptLoading(true)
+    setModal({ title: `Prompt Preview — Generate Test (${target})`, sections: null, loading: true, error: null })
     try {
       const data = await previewTestPrompt(fn.name, sourceCode, fn.mmdb_symbols, target, extraInstructions, file?.rel_path ?? '')
-      setPromptPreview(data)
+      setModal(m => m && ({
+        ...m,
+        loading: false,
+        sections: [
+          { title: 'System Context', text: data.system },
+          { title: 'Prompt', text: data.prompt, defaultOpen: true },
+        ],
+      }))
     } catch (e) {
-      setPromptError(String(e))
-    } finally {
-      setPromptLoading(false)
+      setModal(m => m && ({ ...m, loading: false, error: String(e) }))
+    }
+  }
+
+  const showProbe = async () => {
+    setModal({ title: 'Probe — Last Run', sections: null, loading: true, error: null })
+    try {
+      const data = await fetchProbeFiles()
+      if (!data.source_exists && !data.prompt_exists) {
+        setModal(m => m && ({ ...m, loading: false, error: 'No probe files found. Run generation first.' }))
+        return
+      }
+      setModal(m => m && ({
+        ...m,
+        loading: false,
+        sections: [
+          { title: 'Probe Prompt (sent to LLM)', text: data.prompt || '— empty —' },
+          { title: 'Probe Source (generated C++)', text: data.source || '— empty —', defaultOpen: true },
+        ],
+      }))
+    } catch (e) {
+      setModal(m => m && ({ ...m, loading: false, error: String(e) }))
     }
   }
 
@@ -572,13 +600,13 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-zinc-950">
-      {(promptPreview !== null || promptLoading || promptError !== null) && (
+      {modal && (
         <PromptModal
-          title={`Prompt Preview — Generate Test (${promptTarget})`}
-          data={promptPreview}
-          loading={promptLoading}
-          error={promptError}
-          onClose={() => { setPromptPreview(null); setPromptError(null) }}
+          title={modal.title}
+          sections={modal.sections}
+          loading={modal.loading}
+          error={modal.error}
+          onClose={closeModal}
         />
       )}
       {/* Function header */}
@@ -725,12 +753,13 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
       </div>
 
       {/* Controls */}
-      <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-900 p-4">
+      <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-900 px-4 pt-3 pb-4 space-y-3">
         {error && (
-          <div className="mb-3 px-3 py-2 bg-red-950/50 border border-red-900/50 rounded text-xs text-red-400">{error}</div>
+          <div className="px-3 py-2 bg-red-950/50 border border-red-900/50 rounded text-xs text-red-400">{error}</div>
         )}
 
-        <div className="flex gap-3 mb-3">
+        {/* Model + instructions */}
+        <div className="flex gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-xs text-zinc-500">Model</label>
             <input
@@ -753,29 +782,76 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
         </div>
 
         {/* Generate row */}
-        <div className="flex gap-2 flex-wrap mb-2">
-          <button onClick={() => generate('both')} disabled={!sourceCode} className="btn btn-primary">
+        <div className="flex gap-2 flex-wrap items-center">
+          <button onClick={() => generate('both')} disabled={!sourceCode} className="btn btn-primary btn-sm">
             {streaming === 'both' ? 'Stop' : 'Generate Both'}
           </button>
-          <button onClick={() => generate('mmdb')} disabled={!sourceCode || !!streaming} className="btn btn-secondary">
-            {streaming === 'mmdb' ? 'Stop' : 'MMDB Only'}
+          <button onClick={() => generate('mmdb')} disabled={!sourceCode || !!streaming} className="btn btn-secondary btn-sm">
+            {streaming === 'mmdb' ? 'Stop' : 'MMDB'}
           </button>
-          <button onClick={() => generate('gemmi')} disabled={!sourceCode || !!streaming} className="btn btn-secondary">
-            {streaming === 'gemmi' ? 'Stop' : 'Gemmi Only'}
+          <button onClick={() => generate('gemmi')} disabled={!sourceCode || !!streaming} className="btn btn-secondary btn-sm">
+            {streaming === 'gemmi' ? 'Stop' : 'Gemmi'}
           </button>
 
+          <div className="w-px h-4 bg-zinc-700 self-center" />
+
+          {/* File + compile */}
+          <button onClick={handleWriteFiles} disabled={!mmdbTest && !gemmiTest} className="btn btn-secondary btn-sm">
+            Write
+          </button>
+          <button onClick={() => compileAndRun('mmdb')} disabled={!mmdbTest || compiling === 'gemmi' || !!validating} className="btn btn-secondary btn-sm">
+            {compiling === 'mmdb' ? 'Stop' : 'Run MMDB'}
+          </button>
+          <button onClick={() => compileAndRun('gemmi')} disabled={!gemmiTest || compiling === 'mmdb' || !!validating} className="btn btn-secondary btn-sm">
+            {compiling === 'gemmi' ? 'Stop' : 'Run Gemmi'}
+          </button>
+
+          <div className="w-px h-4 bg-zinc-700 self-center" />
+
+          {/* Validate + fix */}
+          <button
+            onClick={() => runValidateAndFix('mmdb', mmdbTest)}
+            disabled={!mmdbTest || !!compiling || validating === 'gemmi'}
+            className={`btn btn-sm ${validating === 'mmdb' ? 'btn-primary' : 'btn-secondary'}`}
+            title="Compile, run, and auto-fix with LLM"
+          >
+            {validating === 'mmdb' ? 'Stop' : 'Fix MMDB'}
+          </button>
+          <button
+            onClick={() => runValidateAndFix('gemmi', gemmiTest)}
+            disabled={!gemmiTest || !!compiling || validating === 'mmdb'}
+            className={`btn btn-sm ${validating === 'gemmi' ? 'btn-primary' : 'btn-secondary'}`}
+            title="Compile, run, and auto-fix with LLM"
+          >
+            {validating === 'gemmi' ? 'Stop' : 'Fix Gemmi'}
+          </button>
+
+          <div className="w-px h-4 bg-zinc-700 self-center" />
+
+          {/* Inspect */}
+          <button
+            onClick={showProbe}
+            className="btn btn-ghost btn-sm"
+            title="View the probe source and prompt from the last oracle run"
+          >
+            Probe
+          </button>
           <button
             onClick={() => showPrompt('both')}
             disabled={!sourceCode}
-            className="btn btn-secondary"
-            title="Preview the prompt that will be sent to the LLM"
+            className="btn btn-ghost btn-sm"
+            title="Preview the test generation prompt"
           >
-            Preview Prompt
+            Prompt
           </button>
+
+          {!showTerminal && terminal && (
+            <button onClick={() => setShowTerminal(true)} className="btn btn-ghost btn-sm">Output</button>
+          )}
 
           <div className="flex-1" />
 
-          {/* Status */}
+          {/* Status + save */}
           <div className="flex items-center border border-zinc-700 rounded overflow-hidden">
             {(['draft', 'reviewed', 'done'] as const).map(s => (
               <button
@@ -792,50 +868,10 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
             ))}
           </div>
 
-          <button onClick={handleSave} disabled={!dirty && saved} className="btn btn-secondary text-emerald-400 hover:text-emerald-300">
+          <button onClick={handleSave} disabled={!dirty && saved} className="btn btn-secondary btn-sm text-emerald-400 hover:text-emerald-300">
             {saved && !dirty ? 'Saved' : 'Save'}
           </button>
-        </div>
 
-        {/* File/compile row */}
-        <div className="flex gap-2 flex-wrap">
-          <button onClick={handleWriteFiles} disabled={!mmdbTest && !gemmiTest} className="btn btn-secondary btn-sm">
-            Write to File
-          </button>
-          <button onClick={() => compileAndRun('mmdb')} disabled={!mmdbTest || compiling === 'gemmi' || !!validating} className="btn btn-secondary btn-sm">
-            {compiling === 'mmdb' ? 'Stop' : 'Run MMDB'}
-          </button>
-          <button onClick={() => compileAndRun('gemmi')} disabled={!gemmiTest || compiling === 'mmdb' || !!validating} className="btn btn-secondary btn-sm">
-            {compiling === 'gemmi' ? 'Stop' : 'Run Gemmi'}
-          </button>
-          <div className="w-px h-4 bg-zinc-700 self-center" />
-          <button
-            onClick={() => runValidateAndFix('mmdb', mmdbTest)}
-            disabled={!mmdbTest || !!compiling || validating === 'gemmi'}
-            className={`btn btn-sm ${validating === 'mmdb' ? 'btn-primary' : 'btn-secondary'}`}
-            title="Compile, run, and auto-fix with LLM (up to 5 retries)"
-          >
-            {validating === 'mmdb' ? 'Stop' : 'Validate & Fix MMDB'}
-          </button>
-          <button
-            onClick={() => runValidateAndFix('gemmi', gemmiTest)}
-            disabled={!gemmiTest || !!compiling || validating === 'mmdb'}
-            className={`btn btn-sm ${validating === 'gemmi' ? 'btn-primary' : 'btn-secondary'}`}
-            title="Compile, run, and auto-fix with LLM (up to 5 retries)"
-          >
-            {validating === 'gemmi' ? 'Stop' : 'Validate & Fix Gemmi'}
-          </button>
-          {!showTerminal && terminal && (
-            <button onClick={() => setShowTerminal(true)} className="btn btn-ghost btn-sm">Show output</button>
-          )}
-          <div className="flex-1" />
-          <button onClick={() => navigator.clipboard.writeText(mmdbTest).catch(console.error)} disabled={!mmdbTest} className="btn btn-ghost btn-sm">
-            Copy MMDB
-          </button>
-          <button onClick={() => navigator.clipboard.writeText(gemmiTest).catch(console.error)} disabled={!gemmiTest} className="btn btn-ghost btn-sm">
-            Copy Gemmi
-          </button>
-          <div className="w-px h-4 bg-zinc-700 mx-1 self-center" />
           <button
             onClick={() => openCommitDialog('both')}
             disabled={!filePaths?.mmdb_exists && !filePaths?.gemmi_exists}

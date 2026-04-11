@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { FileDetail, FunctionRecord, Stats } from '../types'
 import { fetchSource, postProgress, previewRefactorPrompt } from '../api'
 import type { PromptPreview } from '../api'
+import type { ModalSection } from './PromptModal'
 import { highlightCppWithLines } from '../highlight'
 import PromptModal from './PromptModal'
 
@@ -146,7 +147,10 @@ export default function RefactorPanel({ file, fn, onProgressUpdate, stats }: Pro
       {(promptPreview !== null || promptLoading || promptError !== null) && (
         <PromptModal
           title="Prompt Preview — Refactor"
-          data={promptPreview}
+          sections={promptPreview ? [
+            { title: 'System Context', text: promptPreview.system },
+            { title: 'Prompt', text: promptPreview.prompt, defaultOpen: true },
+          ] as ModalSection[] : null}
           loading={promptLoading}
           error={promptError}
           onClose={() => { setPromptPreview(null); setPromptError(null) }}
