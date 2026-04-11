@@ -53,7 +53,7 @@ function formatOracleEvent(evt: { type: string; [k: string]: unknown }): string 
     // confused with the actual probe source. Indented to make it visually
     // distinct in the terminal.
     const text = (evt.text as string) || ''
-    return text.split('\n').map(l => `  ⋯ ${l}`).join('\n')
+    return text.split('\n').map(l => `${l}`).join('\n')
   }
   if (t === 'llm_response') {
     const streamed = (evt as { _already_streamed?: boolean })._already_streamed
@@ -355,7 +355,7 @@ export default function TestPanel({ file, fn, onTestsUpdate }: Props) {
               // it work through the API before it commits to code. Prefixed
               // and indented so it's clearly not part of the assembled test.
               const text = (evt.text as string) || ''
-              const block = text.split('\n').map(l => `  ⋯ ${l}`).join('\n')
+              const block = text.split('\n').map(l => `${l}`).join('\n')
               setTerminal(prev => prev + block)
               break
             }

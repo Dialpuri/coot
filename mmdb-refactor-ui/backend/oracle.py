@@ -191,12 +191,21 @@ def _retry_prompt_for_compile_error(base_prompt: str, compile_out: str, source: 
 def _retry_prompt_for_run_failure(
     base_prompt: str, source: str, run_out: str, run_ok: bool
 ) -> str:
-    hint = (
-        "No PROBE: lines were printed — remember every output line must "
-        "start with 'PROBE: '."
-        if run_ok
-        else f"The probe exited with an error. Output:\n```\n{run_out[:2000]}\n```"
-    )
+    if run_ok:
+        hint = (
+            "No PROBE: lines were printed.\n\n"
+            "If the function returns a non-void value, make sure you capture it "
+            "and print it as `PROBE: return_value=<value>`.\n\n"
+            "If the function returns void, you must instead print the observable "
+            "side-effects: read back relevant state from the object(s) that were "
+            "passed to the function (e.g. atom counts, coordinates, residue names) "
+            "AFTER the call and prefix every printed line with `PROBE: `. "
+            "If the function has no observable side-effect, print exactly:\n"
+            "    PROBE: void_function=ran_without_error\n"
+            "so the oracle knows the call completed."
+        )
+    else:
+        hint = f"The probe exited with an error. Output:\n```\n{run_out[:2000]}\n```"
     return (
         f"{base_prompt}\n\n"
         f"Your previous probe compiled but did not produce usable output. {hint}\n"

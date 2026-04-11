@@ -27,15 +27,49 @@ $source_code
 ## What the probe must do
 
 1. Contain a single `int main(int, char**)`. No gtest, no `TEST()` macros.
-2. Load coordinate data from this exact path:
-       `$pdb_path`
-   using `mmdb::Manager::ReadCoorFile`. Check the return code and bail out
-   on error.
-3. Navigate the loaded manager (model → chain → residue → atom) until you
-   have the real object(s) the function expects. Do NOT build any synthetic
-   mmdb structures by hand.
-4. Call `$function_name` with those real inputs.
-5. Print the function's output to stdout, one value per line, each prefixed
+2. Load coordinate data from this exact path using the boilerplate below —
+   copy it verbatim, substituting only the path literal:
+
+```cpp
+mmdb::Manager *mol = new mmdb::Manager();
+int err = mol->ReadCoorFile("$pdb_path");
+if (err) {
+    std::cerr << "ReadCoorFile error " << err << ": "
+              << mmdb::GetErrorDescription(static_cast<mmdb::ERROR_CODE>(err)) << std::endl;
+    delete mol;
+    return 1;
+}
+```
+
+   Do NOT use `ReadPDBASCII`, do NOT pass `argv[1]` — use the hard-coded
+   path string shown above. `ReadCoorFile` returns 0 on success and a
+   non-zero `mmdb::ERROR_CODE` on failure.
+
+3. Navigate the loaded manager to get the object(s) the function expects.
+   Use this exact loop skeleton — copy the levels you need and stop when
+   you have the right object:
+
+```cpp
+mmdb::Model   *model_p = mol->GetModel(1);   // model index is 1-based
+int nchains = model_p->GetNumberOfChains();
+for (int ic = 0; ic < nchains; ic++) {
+    mmdb::Chain *chain_p = model_p->GetChain(ic);
+    int nres = chain_p->GetNumberOfResidues();
+    for (int ir = 0; ir < nres; ir++) {
+        mmdb::Residue *res_p = chain_p->GetResidue(ir);
+        int nat = res_p->GetNumberOfAtoms();
+        for (int ia = 0; ia < nat; ia++) {
+            mmdb::Atom *atom_p = res_p->GetAtom(ia);
+            // use atom_p here
+        }
+    }
+}
+```
+
+   Do NOT build any synthetic mmdb structures by hand.
+
+4. Call `$function_name` with the real object(s) obtained above.
+5. Print observable output to stdout, one value per line, each prefixed
    with `PROBE: `:
        std::cout << "PROBE: return_value=" << result << std::endl;
    - For vectors / lists, print the size first then each element:
@@ -43,6 +77,7 @@ $source_code
        PROBE: elem[0]=...
    - For structs, print each field on its own PROBE line.
    - For floats use `std::setprecision(6)`.
+${void_guidance}
 6. Return 0 on success, non-zero on any error.
 
 ## Hard rules

@@ -422,6 +422,41 @@ _PROBE_ESSENTIAL_SYMBOLS: list[str] = [
 ]
 
 
+_VOID_RETURN_RE = re.compile(
+    r'^\s*void\s+(?:\w+::)*\w+\s*\(',  # e.g. "void Foo::bar(" or "void bar("
+    re.MULTILINE,
+)
+
+
+def _is_void_function(source_code: str) -> bool:
+    """Return True if the first function definition in source_code returns void."""
+    return bool(_VOID_RETURN_RE.search(source_code))
+
+
+_VOID_GUIDANCE = """\
+   **This function returns `void` — there is no return value to print.**
+   Instead, examine the function's source code to identify what it modifies
+   as a side-effect, then print that observable state AFTER calling it.
+
+   Reasoning steps you must follow:
+   a) Look at every parameter the function accepts. Parameters passed as a
+      pointer (`T*`) or reference (`T&`) may be written to by the function.
+   b) Look at what the function assigns, pushes, erases, or otherwise mutates
+      in its body (visible in the source above).
+   c) After calling the function, print each observable change using the
+      available MMDB getters (e.g. `GetNumberOfAtoms()`, `GetSeqNum()`,
+      `GetAtomName()`, coordinates via `atom_p->x / y / z`).
+   d) If the function modifies a container (vector, list), print size and
+      key elements. If it sorts it, then check the order.
+   e) If the function sets a flag or member on a struct, print it via any
+      available getter or by reading the public field directly.
+   f) If you truly cannot identify any observable side-effect from the source,
+      print exactly: `PROBE: void_function=ran_without_error`
+      so the oracle knows the call succeeded.
+
+"""
+
+
 def build_probe_mmdb(function_name: str, source_code: str,
                      mmdb_symbols: list[str], additional_instructions: str = "",
                      rel_source_path: str = "", pdb_path: str = "") -> str:
@@ -451,6 +486,7 @@ def build_probe_mmdb(function_name: str, source_code: str,
         header_include=_format_header_include(rel_source_path),
         file_includes=_format_file_includes(rel_source_path),
         pdb_path=pdb_path,
+        void_guidance=_VOID_GUIDANCE if _is_void_function(source_code) else "",
     )
 
 
