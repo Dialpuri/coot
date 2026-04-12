@@ -30,6 +30,7 @@ from fastapi.responses import StreamingResponse
 import report
 from compiler import make_compile_cmd
 from config import MAX_TEST_RETRIES, PROBE_PDB_PATH, PROBE_WORKDIR, args
+from test_utils import sanitize_fn_name
 from models import (
     CompileRunRequest,
     GenerateAllRequest,
@@ -67,15 +68,16 @@ def _ndjson(event: dict) -> str:
 # ── Probe files ──────────────────────────────────────────────────────────────
 
 @router.get("/api/probe/files")
-def get_probe_files():
-    """Return the current probe.cc source and probe_prompt.txt from the workdir.
+def get_probe_files(fn_name: str = Query(None)):
+    """Return the probe.cc source and probe_prompt.txt for a function's probe folder.
 
-    These files are written by the oracle pipeline after every successful (or
-    final-attempt) probe run. Exposing them lets the UI show exactly what was
-    sent to the LLM and what C++ it produced, without needing to re-run anything.
+    If `fn_name` is provided, reads from the function-specific subdirectory
+    (PROBE_WORKDIR/<sanitized_fn_name>/). Falls back to PROBE_WORKDIR itself for
+    backwards compatibility when no fn_name is given.
     """
-    src_path    = PROBE_WORKDIR / "probe.cc"
-    prompt_path = PROBE_WORKDIR / "probe_prompt.txt"
+    workdir = PROBE_WORKDIR / sanitize_fn_name(fn_name) if fn_name else PROBE_WORKDIR
+    src_path    = workdir / "probe.cc"
+    prompt_path = workdir / "probe_prompt.txt"
     return {
         "source":         src_path.read_text(errors="replace")    if src_path.exists()    else "",
         "prompt":         prompt_path.read_text(errors="replace")  if prompt_path.exists() else "",

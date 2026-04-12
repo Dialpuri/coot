@@ -54,6 +54,7 @@ from compiler import make_probe_compile_cmd
 from config import MAX_PROBE_RETRIES, PROBE_PDB_PATH, PROBE_WORKDIR, args
 from ollama import stream_ollama
 from prompts import PROBE_SYSTEM_CONTEXT, build_probe_mmdb, strip_fences
+from test_utils import sanitize_fn_name
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -236,18 +237,19 @@ async def run_mmdb_oracle(
         )}
         return
 
-    # Workdir is reused between runs so the latest probe.cc is inspectable.
-    PROBE_WORKDIR.mkdir(parents=True, exist_ok=True)
-    probe_src = PROBE_WORKDIR / "probe.cc"
-    probe_bin = PROBE_WORKDIR / "probe"
-    yield {"type": "info", "text": f"probe workdir: {PROBE_WORKDIR}"}
+    # Each function gets its own subdirectory so probes don't overwrite each other.
+    fn_workdir = PROBE_WORKDIR / sanitize_fn_name(function_name)
+    fn_workdir.mkdir(parents=True, exist_ok=True)
+    probe_src = fn_workdir / "probe.cc"
+    probe_bin = fn_workdir / "probe"
+    yield {"type": "info", "text": f"probe workdir: {fn_workdir}"}
 
     base_prompt = build_probe_mmdb(
         function_name, source_code, mmdb_symbols, additional_instructions,
         rel_source_path=rel_source_path, pdb_path=pdb,
     )
     # Persist the prompt next to the probe so devs can re-run it manually.
-    (PROBE_WORKDIR / "probe_prompt.txt").write_text(base_prompt)
+    (fn_workdir / "probe_prompt.txt").write_text(base_prompt)
 
     prompt = base_prompt
     last_source = ""
