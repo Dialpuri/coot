@@ -43,7 +43,11 @@ async def call_ollama(model: str, prompt: str, system: str | None = None) -> str
     async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(OLLAMA_URL, json=payload)
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        data = resp.json()
+        sent = data.get("prompt_eval_count", "?")
+        recv = data.get("eval_count", "?")
+        print(f"[tokens] sent={sent}  recv={recv}  model={model}")
+        return data.get("response", "")
 
 
 async def stream_ollama(
@@ -73,6 +77,10 @@ async def stream_ollama(
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if data.get("done"):
+                    sent = data.get("prompt_eval_count", "?")
+                    recv = data.get("eval_count", "?")
+                    print(f"[tokens] sent={sent}  recv={recv}  model={model}")
                 thinking = data.get("thinking", "")
                 if thinking:
                     yield {"kind": "thinking", "text": thinking}
