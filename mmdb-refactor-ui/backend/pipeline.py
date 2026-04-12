@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from compiler import compile_test, run_test
-from config import MAX_TEST_RETRIES
+from config import MAX_TEST_RETRIES, PROBE_WORKDIR
 from ollama import call_ollama, stream_ollama
 from oracle import ProbeResult, run_mmdb_oracle
 from prompts import (
@@ -36,7 +36,7 @@ from prompts import (
     strip_fences,
     system_context_for_test_target,
 )
-from test_utils import wrap_test_content
+from test_utils import sanitize_fn_name, wrap_test_content
 
 
 # ── 1. Oracle ─────────────────────────────────────────────────────────────────
@@ -149,6 +149,9 @@ async def stream_test_generation(
         probe_source=probe_source,
         probe_pdb_path=probe_pdb_path,
     )
+    fn_workdir = PROBE_WORKDIR / sanitize_fn_name(function_name)
+    fn_workdir.mkdir(parents=True, exist_ok=True)
+    (fn_workdir / "test_prompt.txt").write_text(prompt)
     system = system_context_for_test_target(target)
 
     yield {"type": "test_start"}

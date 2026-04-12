@@ -478,6 +478,8 @@ async def generate_all_tests(req: GenerateAllRequest):
                 probe_src  = oracle_probe_source(probe)
 
                 # ── 2. Generate test(s) ──────────────────────────────────
+                fn_workdir = PROBE_WORKDIR / sanitize_fn_name(fn_name)
+                fn_workdir.mkdir(parents=True, exist_ok=True)
                 if target == "both":
                     prompt = build_generate_test(
                         fn_name, source, mmdb_syms, "both",
@@ -487,6 +489,7 @@ async def generate_all_tests(req: GenerateAllRequest):
                         probe_source=probe_src,
                         probe_pdb_path=PROBE_PDB_PATH,
                     )
+                    (fn_workdir / "test_prompt.txt").write_text(prompt)
                     raw = await call_ollama(
                         req.model, prompt,
                         system=system_context_for_test_target("both"),
@@ -505,6 +508,7 @@ async def generate_all_tests(req: GenerateAllRequest):
                         probe_source=probe_src,
                         probe_pdb_path=PROBE_PDB_PATH,
                     )
+                    (fn_workdir / "test_prompt.txt").write_text(prompt)
                     raw = await call_ollama(
                         req.model, prompt,
                         system=system_context_for_test_target(target),
