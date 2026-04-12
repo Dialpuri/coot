@@ -244,6 +244,29 @@ async def run_mmdb_oracle(
     probe_bin = fn_workdir / "probe"
     yield {"type": "info", "text": f"probe workdir: {fn_workdir}"}
 
+    # If the binary already exists, skip LLM + compile and re-run directly.
+    if probe_bin.exists() and probe_src.exists():
+        yield {"type": "info", "text": "probe binary found — skipping LLM + compile"}
+        yield {"type": "run_cmd", "cmd": f"{probe_bin} {pdb}", "pdb": pdb}
+        t0 = time.monotonic()
+        run_ok, run_out = await _run_probe(probe_bin, pdb)
+        probe_lines = _extract_probe_lines(run_out)
+        yield {
+            "type":        "run_out",
+            "ok":          run_ok,
+            "text":        run_out,
+            "probe_lines": probe_lines,
+            "elapsed_s":   round(time.monotonic() - t0, 2),
+        }
+        if run_ok and probe_lines:
+            yield {"type": "done", "result": ProbeResult(
+                ok=True, raw_stdout=run_out, probe_lines=probe_lines,
+                probe_source=probe_src.read_text(errors="replace"),
+                attempts=0, stage="ok",
+            )}
+            return
+        yield {"type": "info", "text": "cached probe failed — regenerating"}
+
     base_prompt = build_probe_mmdb(
         function_name, source_code, mmdb_symbols, additional_instructions,
         rel_source_path=rel_source_path, pdb_path=pdb,
