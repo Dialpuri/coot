@@ -90,7 +90,7 @@ async def main() -> None:
 
     # Per-variant counters
     counts: dict[str, dict[str, int]] = {
-        v: {"not_written": 0, "pass": 0, "compile_error": 0, "fail": 0}
+        v: {"not_written": 0, "written": 0, "pass": 0, "compile_error": 0, "fail": 0}
         for v in variants
     }
     details: list[tuple[str, str, str, dict[str, str]]] = []  # (key, fn_name, rel_path, {v: status})
