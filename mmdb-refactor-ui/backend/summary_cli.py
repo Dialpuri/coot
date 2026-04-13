@@ -58,16 +58,12 @@ _STATUS_CHAR = {
 }
 
 
-async def _compile_and_run(rel_path: str, fn_name: str, variant: str, code: str) -> str:
-    """Write the test code to its file, compile, run; return status string."""
+async def _run_existing(rel_path: str, fn_name: str, variant: str) -> str:
+    """Run an already-compiled test binary; return status string."""
     test_path = get_test_file_path(rel_path, fn_name, variant)
-    test_path.parent.mkdir(parents=True, exist_ok=True)
-    test_path.write_text(code)
-
-    ok, _ = await compile_test(test_path)
-    if not ok:
-        return "compile_error"
-
+    bin_path = test_path.parent / "bin" / test_path.stem
+    if not bin_path.exists():
+        return "no_binary"
     ok, _ = await run_test(test_path)
     return "pass" if ok else "fail"
 
@@ -90,7 +86,7 @@ async def main() -> None:
 
     # Per-variant counters
     counts: dict[str, dict[str, int]] = {
-        v: {"not_written": 0, "written": 0, "pass": 0, "compile_error": 0, "fail": 0}
+        v: {"not_written": 0, "written": 0, "pass": 0, "no_binary": 0, "fail": 0}
         for v in variants
     }
     details: list[tuple[str, str, str, dict[str, str]]] = []  # (key, fn_name, rel_path, {v: status})
@@ -109,7 +105,7 @@ async def main() -> None:
                     code = rec.get(f"{v}_test", "").strip()
                     if code:
                         tasks[(key, v)] = asyncio.create_task(
-                            _compile_and_run(rel_path, fn_name, v, code)
+                            _run_existing(rel_path, fn_name, v)
                         )
 
         written_count = len(tasks) // len(variants) if variants else 0
@@ -153,18 +149,18 @@ async def main() -> None:
         c = counts[v]
         print(f"\n  [{v.upper()}]")
         if do_run:
-            passed        = c["pass"]
-            compile_error = c["compile_error"]
-            failed        = c["fail"]
-            not_written   = c["not_written"]
-            written       = passed + compile_error + failed
-            pct_written   = 100 * written     / total if total else 0
-            pct_pass      = 100 * passed      / total if total else 0
-            print(f"    Written       : {written:>5}  {_bar(written, total)}  {pct_written:.1f}%")
-            print(f"    Passing       : {passed:>5}  {_bar(passed, total)}  {pct_pass:.1f}%")
-            print(f"    Compile error : {compile_error:>5}")
-            print(f"    Failing       : {failed:>5}")
-            print(f"    Not written   : {not_written:>5}")
+            passed      = c["pass"]
+            no_binary   = c["no_binary"]
+            failed      = c["fail"]
+            not_written = c["not_written"]
+            written     = passed + no_binary + failed
+            pct_written = 100 * written / total if total else 0
+            pct_pass    = 100 * passed   / total if total else 0
+            print(f"    Written     : {written:>5}  {_bar(written, total)}  {pct_written:.1f}%")
+            print(f"    Passing     : {passed:>5}  {_bar(passed, total)}  {pct_pass:.1f}%")
+            print(f"    Failing     : {failed:>5}")
+            print(f"    No binary   : {no_binary:>5}")
+            print(f"    Not written : {not_written:>5}")
         else:
             written     = c["written"]
             not_written = c["not_written"]
