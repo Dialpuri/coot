@@ -51,10 +51,10 @@ def _bar(n: int, total: int, width: int = 30) -> str:
 # "not_written" | "pass" | "compile_error" | "fail"
 
 _STATUS_CHAR = {
-    "not_written":   "·",
-    "pass":          "✓",
-    "compile_error": "C",
-    "fail":          "✗",
+    "not_written": "·",
+    "pass":        "✓",
+    "no_binary":   "B",
+    "fail":        "✗",
 }
 
 
