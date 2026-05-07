@@ -7,7 +7,6 @@ TEST(OracleTest, get_types_in_molecule) {
     // INPUT: PDB path
     std::string pdb_path = "/lmb/home/jdialpuri/Development/coot-tooling/test-data/example.pdb";
 
-    // Read the PDB file using gemmi
     gemmi::Structure st = gemmi::read_pdb_file(pdb_path);
 
     // Call the function under observation
@@ -39,6 +38,6 @@ TEST(OracleTest, get_types_in_molecule) {
 }
 
 int main(int argc, char **argv) {
-    testing::InitGoogleTest(&argc, argv);
+    ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
