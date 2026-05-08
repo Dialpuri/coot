@@ -1,0 +1,1 @@
+// function.cc omitted - all functionality is in function.hh (inline implementation)
