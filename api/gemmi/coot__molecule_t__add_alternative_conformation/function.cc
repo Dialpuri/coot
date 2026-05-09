@@ -1,0 +1,1 @@
+// Header-only implementation - no separate .cc file needed
