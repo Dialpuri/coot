@@ -1,0 +1,1 @@
+// No separate .cc file needed - all functions are inline in header
