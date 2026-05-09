@@ -1,0 +1,1 @@
+// No function.cc needed - all code is inline in function.hh
