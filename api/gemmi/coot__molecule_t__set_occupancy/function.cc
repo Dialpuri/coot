@@ -1,0 +1,1 @@
+// Empty - function is header-only inline
