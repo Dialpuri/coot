@@ -1,0 +1,1 @@
+// Body is fully inline in function.hh - no .cc file needed
