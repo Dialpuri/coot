@@ -1,0 +1,1 @@
+// Empty file - function is defined inline in function.hh
