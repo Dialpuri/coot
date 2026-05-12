@@ -1,0 +1,1 @@
+// Empty - function is fully defined inline in function.hh
