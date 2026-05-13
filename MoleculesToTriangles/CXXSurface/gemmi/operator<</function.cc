@@ -1,0 +1,1 @@
+// not needed - function is fully inline
