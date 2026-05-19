@@ -1,0 +1,1 @@
+// Not needed - function is fully defined inline in function.hh
