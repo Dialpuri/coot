@@ -1,0 +1,1 @@
+// Not needed - function is fully inline in function.hh
