@@ -1,0 +1,1 @@
+// No separate .cc file needed - all logic is inline in function.hh
