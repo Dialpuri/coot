@@ -287,8 +287,11 @@ molecule_class_info_t::setup_internal() { // init
    map_mesh_first_time = true;
    model_mesh_first_time = true;
 
-   material_for_maps.do_specularity = false;
-   material_for_maps.specular_strength = 0.5; // non-shiny maps by default.
+   // material_for_maps.do_specularity = false;
+   // material_for_maps.specular_strength = 0.5; // non-shiny maps by default.
+
+   // this can be set by the user now.
+   material_for_maps = graphics_info_t::default_material_for_maps;
 
    material_for_models.do_specularity = true;
    material_for_models.specular_strength = 1.0;
@@ -7001,8 +7004,6 @@ molecule_class_info_t::close_yourself() {
          if (was_coords) {
             GtkWidget *coords_vbox = widget_from_builder("display_molecule_vbox");
             if (GTK_IS_BOX(coords_vbox)) {
-               std::cout << "in close_yourself() fix container B foreach" << std::endl;
-
                GtkWidget *item_widget = gtk_widget_get_first_child(coords_vbox);
                while (item_widget) {
                   GtkWidget *next_item = gtk_widget_get_next_sibling(item_widget);

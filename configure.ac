@@ -26,7 +26,7 @@ dnl
 dnl Process this file with autoconf to produce a configure script.
 
 
-AC_INIT([coot],[1.2.x-pre])
+AC_INIT([coot],[1.3.1])
 AC_CONFIG_SRCDIR(src/main.cc)
 AM_INIT_AUTOMAKE
 
@@ -474,7 +474,7 @@ else
     AC_LANG_POP
     AC_MSG_RESULT(yes)
     AC_SUBST(GEMMI_CXXFLAGS)
-    AC_SUBST(GEMMI_LIBS, "-L$withval/lib -lgemmi_cpp")
+    AC_SUBST(GEMMI_LIBS, "-L$withval/lib64 -lgemmi_cpp")
 fi
 
 # 20090613 We need to be able to determine the build type, and embed
@@ -610,6 +610,7 @@ high-res/Makefile
 cootaneer/Makefile
 cootilus/Makefile
 greg-tests/Makefile
+graphs/Makefile
 python-tests/Makefile
 lidia-core/Makefile
 doc/Makefile

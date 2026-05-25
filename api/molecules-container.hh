@@ -830,12 +830,12 @@ public:
    //! Get a monomer for a particular molecule
    //!
    //! @param comp_id is the 3-letter code for the residue/ligand, e.g. "ALA" for alanine
-   //! @param imol is the model molecule index, use -999999 (IMOL_ENC_ANY) if no molecule-specific dictionary is needed
+   //! @param imol_enc is the model molecule index, use -999999 (IMOL_ENC_ANY) if no molecule-specific dictionary is needed
    //! @param idealised_flag means that the coordinates have been minimised with a molecular modelling minimisation algo,
    //!        usually the value is True
    //!
    //! @return the new molecule index on success and -1 on failure
-   int get_monomer_from_dictionary(const std::string &comp_id, int imol, bool idealised_flag);
+   int get_monomer_from_dictionary(const std::string &comp_id, int imol_enc, bool idealised_flag);
 
    //! Get monomer and place it at the given position for a particular molecule
    //!
@@ -1944,6 +1944,25 @@ public:
                                                                          float other_map_for_colouring_min_value,
                                                                          float other_map_for_colouring_max_value,
                                                                          bool invert_colour_ramp);
+   //! Get the mesh for a map cap (2D cross-section with stitched 3D isosurface walls)
+   //!
+   //! @param imol is the map molecule index
+   //! @param base_point_x/y/z is the origin of the cap plane
+   //! @param x_axis_x/y/z is the x-axis unit vector of the cap plane
+   //! @param y_axis_x/y/z is the y-axis unit vector of the cap plane
+   //! @param x_axis_step_size is the grid spacing along x
+   //! @param y_axis_step_size is the grid spacing along y
+   //! @param n_x_axis_points is the number of grid points along x
+   //! @param n_y_axis_points is the number of grid points along y
+   //!
+   //! @return a `simple_mesh_t` for the map cap
+   coot::simple_mesh_t get_map_cap_mesh(int imol, float contour_level,
+                                        double base_point_x, double base_point_y, double base_point_z,
+                                        double x_axis_x, double x_axis_y, double x_axis_z,
+                                        double y_axis_x, double y_axis_y, double y_axis_z,
+                                        double x_axis_step_size, double y_axis_step_size,
+                                        unsigned int n_x_axis_points, unsigned int n_y_axis_points);
+
    //! Set the map saturation
    //!
    //! @param s is the map saturation, e.g. a number between 0 and 1, where 0 is grey and 1 is "lego-like" colour scheme.
