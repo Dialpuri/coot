@@ -46,6 +46,9 @@
 #include "add-terminal-residue.hh"
 #include "molecules-container.hh"
 
+#include <gemmi/mmread.hpp>
+#include <gemmi/pdb.hpp>
+
 bool
 coot::molecule_t::is_valid_model_molecule() const {
 
@@ -5375,86 +5378,100 @@ using json = nlohmann::json;
 std::string
 coot::molecule_t::get_pucker_analysis_info() const {
 
-   std::string s;
+   std::string path = "/Users/dialpuri/lmb/pucker-analysis/data/7K00.cif";
+   gemmi::Structure st = gemmi::read_structure_file(path);
 
-   std::vector<std::pair<mmdb::Residue *, pucker_analysis_info_t> > puckers;
-   std::string alt_conf = "";
-   if (atom_sel.mol) {
-      int imod = 1;
-      mmdb::Model *model_p = atom_sel.mol->GetModel(imod);
-      if (model_p) {
-         int n_chains = model_p->GetNumberOfChains();
-         for (int ichain=0; ichain<n_chains; ichain++) {
-            mmdb::Chain *chain_p = model_p->GetChain(ichain);
-            int n_res = chain_p->GetNumberOfResidues();
-            if (n_res > 1) {
-               for (int ires=0; ires<(n_res-1); ires++) {
-                  mmdb::Residue *residue_p      = chain_p->GetResidue(ires);
-                  mmdb::Residue *residue_next_p = chain_p->GetResidue(ires+1);
-                  if (residue_p) {
-                     if (residue_p->GetNumberOfAtoms() > 14) {
-                        try {
-                           pucker_analysis_info_t pai(residue_p, alt_conf);
-                           double d = pai.phosphate_distance_to_base_plane(residue_next_p);
-                           // store d in the markup info
-                           pai.markup_info.phosphate_distance_to_base_plane = d;
-                           puckers.push_back(std::make_pair(residue_p, pai));
-                        }
-                        catch (const std::runtime_error &e) {
-                           // it's OK.
-                           // std::cout << "WARNING::" << e.what() << std::endl;
-                        }
-                     }
-                  }
-               }
-            }
+   for (int m = 0; m < st.models.size(); m++) {
+      for (int c = 0; c < st.models[m].chains.size(); c++) {
+         for (int r = 0; r < st.models[m].chains[c].residues.size(); r++) {
+            pucker_analysis_info_gemmi_t pai = {&st.models[m].chains[c].residues[r], "*"};
+            return "";
          }
       }
    }
-   if (! puckers.empty()) {
 
-      json j = json::array();
-      for (unsigned int i=0; i<puckers.size(); i++) {
-         const auto &pi = puckers[i].second;
-         mmdb::Residue *residue_p  = puckers[i].first;
-         json j_plane_distortion = pi.plane_distortion;
-         json j_out_of_plane_distance = pi.out_of_plane_distance;
-         json j_markup_info_phosphorus_distance_to_base_plane = pi.markup_info.phosphate_distance_to_base_plane;
-         json j_puckered_atom = pi.puckered_atom();
-         json j_res_name = residue_p->GetResName();
-         json j_chain_id = residue_p->GetChainID();
-         json j_res_no = residue_p->GetSeqNum();
-         json j_markup_info_base_ring_centre;
-         json j_markup_info_base_ring_normal;
-         json j_markup_info_base_phosphorus_position;
-         json j_markup_info_base_projected_point;
-         j_markup_info_base_ring_centre["x"] = pi.markup_info.base_ring_centre.x();
-         j_markup_info_base_ring_centre["y"] = pi.markup_info.base_ring_centre.y();
-         j_markup_info_base_ring_centre["z"] = pi.markup_info.base_ring_centre.z();
-         j_markup_info_base_ring_normal["x"] = pi.markup_info.base_ring_normal.x();
-         j_markup_info_base_ring_normal["y"] = pi.markup_info.base_ring_normal.y();
-         j_markup_info_base_ring_normal["z"] = pi.markup_info.base_ring_normal.z();
-         j_markup_info_base_phosphorus_position["x"] = pi.markup_info.phosphorus_position.x();
-         j_markup_info_base_phosphorus_position["y"] = pi.markup_info.phosphorus_position.y();
-         j_markup_info_base_phosphorus_position["z"] = pi.markup_info.phosphorus_position.z();
-         j_markup_info_base_projected_point["x"] = pi.markup_info.projected_point.x();
-         j_markup_info_base_projected_point["y"] = pi.markup_info.projected_point.y();
-         j_markup_info_base_projected_point["z"] = pi.markup_info.projected_point.z();
-         json j_pucker;
-         j_pucker["plane_distortion"]      = j_plane_distortion;
-         j_pucker["out_of_plane_distance"] = j_out_of_plane_distance;
-         j_pucker["puckered_atom"]         = j_puckered_atom;
-         j_pucker["chain_id"]              = j_chain_id;
-         j_pucker["res_no"]                = j_res_no;
-         j_pucker["res_name"]              = j_res_name;
-         j_pucker["base_ring_centre"]             = j_markup_info_base_ring_centre;
-         j_pucker["base_ring_normal"]             = j_markup_info_base_ring_normal;
-         j_pucker["phosphorus_position"]          = j_markup_info_base_phosphorus_position;
-         j_pucker["projected_point"]             = j_markup_info_base_projected_point;
-         j_pucker["phosphate_distance_to_base_plane"] = j_markup_info_phosphorus_distance_to_base_plane;
-         j.push_back(j_pucker);
-      }
-      s = j.dump(4);
-   }
-   return s;
+   return "";
+
+   // std::string s;
+   //
+   // std::vector<std::pair<mmdb::Residue *, pucker_analysis_info_t> > puckers;
+   // std::string alt_conf = "";
+   // if (atom_sel.mol) {
+   //    int imod = 1;
+   //    mmdb::Model *model_p = atom_sel.mol->GetModel(imod);
+   //    if (model_p) {
+   //       int n_chains = model_p->GetNumberOfChains();
+   //       for (int ichain=0; ichain<n_chains; ichain++) {
+   //          mmdb::Chain *chain_p = model_p->GetChain(ichain);
+   //          int n_res = chain_p->GetNumberOfResidues();
+   //          if (n_res > 1) {
+   //             for (int ires=0; ires<(n_res-1); ires++) {
+   //                mmdb::Residue *residue_p      = chain_p->GetResidue(ires);
+   //                mmdb::Residue *residue_next_p = chain_p->GetResidue(ires+1);
+   //                if (residue_p) {
+   //                   if (residue_p->GetNumberOfAtoms() > 14) {
+   //                      try {
+   //                         pucker_analysis_info_t pai(residue_p, alt_conf);
+   //                         double d = pai.phosphate_distance_to_base_plane(residue_next_p);
+   //                         // store d in the markup info
+   //                         pai.markup_info.phosphate_distance_to_base_plane = d;
+   //                         puckers.push_back(std::make_pair(residue_p, pai));
+   //                      }
+   //                      catch (const std::runtime_error &e) {
+   //                         // it's OK.
+   //                         // std::cout << "WARNING::" << e.what() << std::endl;
+   //                      }
+   //                   }
+   //                }
+   //             }
+   //          }
+   //       }
+   //    }
+   // }
+   // if (! puckers.empty()) {
+   //
+   //    json j = json::array();
+   //    for (unsigned int i=0; i<puckers.size(); i++) {
+   //       const auto &pi = puckers[i].second;
+   //       mmdb::Residue *residue_p  = puckers[i].first;
+   //       json j_plane_distortion = pi.plane_distortion;
+   //       json j_out_of_plane_distance = pi.out_of_plane_distance;
+   //       json j_markup_info_phosphorus_distance_to_base_plane = pi.markup_info.phosphate_distance_to_base_plane;
+   //       json j_puckered_atom = pi.puckered_atom();
+   //       json j_res_name = residue_p->GetResName();
+   //       json j_chain_id = residue_p->GetChainID();
+   //       json j_res_no = residue_p->GetSeqNum();
+   //       json j_markup_info_base_ring_centre;
+   //       json j_markup_info_base_ring_normal;
+   //       json j_markup_info_base_phosphorus_position;
+   //       json j_markup_info_base_projected_point;
+   //       j_markup_info_base_ring_centre["x"] = pi.markup_info.base_ring_centre.x();
+   //       j_markup_info_base_ring_centre["y"] = pi.markup_info.base_ring_centre.y();
+   //       j_markup_info_base_ring_centre["z"] = pi.markup_info.base_ring_centre.z();
+   //       j_markup_info_base_ring_normal["x"] = pi.markup_info.base_ring_normal.x();
+   //       j_markup_info_base_ring_normal["y"] = pi.markup_info.base_ring_normal.y();
+   //       j_markup_info_base_ring_normal["z"] = pi.markup_info.base_ring_normal.z();
+   //       j_markup_info_base_phosphorus_position["x"] = pi.markup_info.phosphorus_position.x();
+   //       j_markup_info_base_phosphorus_position["y"] = pi.markup_info.phosphorus_position.y();
+   //       j_markup_info_base_phosphorus_position["z"] = pi.markup_info.phosphorus_position.z();
+   //       j_markup_info_base_projected_point["x"] = pi.markup_info.projected_point.x();
+   //       j_markup_info_base_projected_point["y"] = pi.markup_info.projected_point.y();
+   //       j_markup_info_base_projected_point["z"] = pi.markup_info.projected_point.z();
+   //       json j_pucker;
+   //       j_pucker["plane_distortion"]      = j_plane_distortion;
+   //       j_pucker["out_of_plane_distance"] = j_out_of_plane_distance;
+   //       j_pucker["puckered_atom"]         = j_puckered_atom;
+   //       j_pucker["chain_id"]              = j_chain_id;
+   //       j_pucker["res_no"]                = j_res_no;
+   //       j_pucker["res_name"]              = j_res_name;
+   //       j_pucker["base_ring_centre"]             = j_markup_info_base_ring_centre;
+   //       j_pucker["base_ring_normal"]             = j_markup_info_base_ring_normal;
+   //       j_pucker["phosphorus_position"]          = j_markup_info_base_phosphorus_position;
+   //       j_pucker["projected_point"]             = j_markup_info_base_projected_point;
+   //       j_pucker["phosphate_distance_to_base_plane"] = j_markup_info_phosphorus_distance_to_base_plane;
+   //       j.push_back(j_pucker);
+   //    }
+   //    s = j.dump(4);
+   // }
+   // return s;
 }

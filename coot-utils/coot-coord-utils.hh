@@ -54,6 +54,13 @@
 
 #include "cis-peptide-info.hh"
 
+#include <gemmi/model.hpp>
+#include <gemmi/calculate.hpp>
+
+#include "coot-utils/json.hpp"
+using json = nlohmann::json;
+
+
 namespace coot {
 
    // a generally useful class to be used with std::map where the
@@ -516,6 +523,30 @@ namespace coot {
       std::string to_json() const;
    };
 
+   class pucker_analysis_info_gemmi_t {
+      enum PUCKERED_ATOM_T { NONE, C1_PRIME, C2_PRIME, C3_PRIME, C4_PRIME, O4_PRIME };
+      PUCKERED_ATOM_T puckered_atom_;
+      std::string altconf;
+      std::string pucker_name;
+      const gemmi::Atom *N1_or_9;
+      const gemmi::Atom *C1_prime;
+      void assign_base_atom_coords(gemmi::Residue *residue);
+      static double compute_pucker_parameter(gemmi::Residue *residue);
+      static std::string classify_pucker(double P_deg);
+
+   public:
+      float plane_distortion;
+      float out_of_plane_distance;
+      std::vector<clipper::Coord_orth> ribose_atoms_coords;
+      std::vector<clipper::Coord_orth> base_atoms_coords;
+      pucker_analysis_markup_info_t markup_info;
+
+      pucker_analysis_info_gemmi_t(gemmi::Residue *residue, std::string altconf_in);
+      float phosphate_distance(gemmi::Residue *following_res);
+      float phosphate_distance_to_base_plane(gemmi::Residue *following_res);
+      std::string puckered_atom() const;
+      [[nodiscard]] json to_json() const;
+   };
 
 
    class graph_match_info_t {
