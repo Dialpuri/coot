@@ -500,6 +500,10 @@ namespace coot {
       void assign_base_atom_coords(mmdb::Residue *residue_p);
       mmdb::Atom *N1_or_9;
       mmdb::Atom *C1_prime;
+
+      static double compute_pucker_parameter(std::vector<clipper::Coord_orth>& coordinates);
+      static std::string classify_pucker(double P_deg);
+
    public:
       float plane_distortion;
       float out_of_plane_distance;
@@ -507,6 +511,8 @@ namespace coot {
       std::vector<clipper::Coord_orth> base_atoms_coords; // the perpendicular distance of the
                                                           // following phosphate is to the *BASE*
                                                           // atoms (stupid boy).
+      double P_deg;
+      std::string pucker_name;
 
       // Throw an exception if it is not possible to generate pucker info
       //
@@ -521,31 +527,6 @@ namespace coot {
       pucker_analysis_markup_info_t markup_info; // fill this
       std::string puckered_atom() const;
       std::string to_json() const;
-   };
-
-   class pucker_analysis_info_gemmi_t {
-      enum PUCKERED_ATOM_T { NONE, C1_PRIME, C2_PRIME, C3_PRIME, C4_PRIME, O4_PRIME };
-      PUCKERED_ATOM_T puckered_atom_;
-      std::string altconf;
-      std::string pucker_name;
-      const gemmi::Atom *N1_or_9;
-      const gemmi::Atom *C1_prime;
-      void assign_base_atom_coords(gemmi::Residue *residue);
-      static double compute_pucker_parameter(gemmi::Residue *residue);
-      static std::string classify_pucker(double P_deg);
-
-   public:
-      float plane_distortion;
-      float out_of_plane_distance;
-      std::vector<clipper::Coord_orth> ribose_atoms_coords;
-      std::vector<clipper::Coord_orth> base_atoms_coords;
-      pucker_analysis_markup_info_t markup_info;
-
-      pucker_analysis_info_gemmi_t(gemmi::Residue *residue, std::string altconf_in);
-      float phosphate_distance(gemmi::Residue *following_res);
-      float phosphate_distance_to_base_plane(gemmi::Residue *following_res);
-      std::string puckered_atom() const;
-      [[nodiscard]] json to_json() const;
    };
 
 

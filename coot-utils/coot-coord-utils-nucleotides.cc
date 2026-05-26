@@ -112,6 +112,10 @@ coot::pucker_analysis_info_t::pucker_analysis_info_t(mmdb::Residue *res_p,
                                   ribose_atoms[i_oop_atom]->z);
             ribose_atoms_coords.push_back(c);
          }
+
+         P_deg = compute_pucker_parameter(ribose_atoms_coords);
+         pucker_name = classify_pucker(P_deg);
+
          // oop: out of plane distance
          std::vector<std::pair<float, float> > pucker_distortion_and_oop_d(5);
          for (int i_oop_atom=0; i_oop_atom<5; i_oop_atom++) {
@@ -174,270 +178,13 @@ coot::pucker_analysis_info_t::to_json() const {
    j["plane_distortion"]      = j_plane_distortion;
    j["out_of_plane_distance"] = j_out_of_plane_distance;
    j["puckered_atom"]         = j_puckered_atom;
-
+   j["P_deg"] = P_deg;
+   j["pucker_name"] = pucker_name;
    // json["plane_distortion"] = plane_distortion;
    // json["out_of_plane_distance"] = out_of_plane_distance;
    // json["puckered_atom"] = puckered_atom();
    std::string s = j.dump(4);
    return s;
-}
-
-double coot::pucker_analysis_info_gemmi_t::compute_pucker_parameter(gemmi::Residue *residue) {
-   const gemmi::Atom *o4_prime = residue->find_atom("O4'", '*');
-   const gemmi::Atom *c1_prime = residue->find_atom("C1'", '*');
-   const gemmi::Atom *c2_prime = residue->find_atom("C2'", '*');
-   const gemmi::Atom *c3_prime = residue->find_atom("C3'", '*');
-   const gemmi::Atom *c4_prime = residue->find_atom("C4'", '*');
-
-   double v_0 = gemmi::calculate_dihedral_from_atoms(c4_prime, o4_prime, c1_prime, c2_prime);
-   double v_1 = gemmi::calculate_dihedral_from_atoms(o4_prime, c1_prime, c2_prime, c3_prime);
-   double v_2 = gemmi::calculate_dihedral_from_atoms(c1_prime, c2_prime, c3_prime, c4_prime);
-   double v_3 = gemmi::calculate_dihedral_from_atoms(c2_prime, c3_prime, c4_prime, o4_prime);
-   double v_4 = gemmi::calculate_dihedral_from_atoms(c3_prime, c4_prime, o4_prime, c1_prime);
-
-   constexpr double deg36_r = 36.0 * M_PI / 180.0;
-   constexpr double deg72_r = 72.0 * M_PI / 180.0;
-
-   double numerator = (v_4 + v_1) - (v_3 + v_0);
-   double denominator = 2.0 * v_2 * (std::sin(deg36_r) + std::sin(deg72_r));
-
-   double P_rad = std::atan2(numerator, denominator);
-   double P_deg = P_rad * 180.0 / M_PI;
-
-   // double taum = v_2 / std::cos(P_rad);
-
-   if (P_deg < 0)
-      P_deg += 360.0;
-   return P_deg;
-}
-coot::pucker_analysis_info_gemmi_t::pucker_analysis_info_gemmi_t(gemmi::Residue *residue, std::string altconf_in) {
-
-   auto get_base_lsq_plane = [] (const std::vector<clipper::Coord_orth> &coords) ->
-      std::optional<lsq_plane_info_t> {
-      if (coords.size() < 3) return std::nullopt;
-      lsq_plane_info_t lsq_plane(coords);
-      return lsq_plane;
-   };
-
-   out_of_plane_distance = 0.0;
-   plane_distortion = 0.0;
-   N1_or_9  = nullptr;
-   C1_prime = nullptr;
-   puckered_atom_ = NONE;
-   altconf = altconf_in;
-
-   double P_deg = compute_pucker_parameter(residue);
-   pucker_name = classify_pucker(P_deg);
-
-   assign_base_atom_coords(residue);
-
-   std::optional<lsq_plane_info_t> lsq_plane = get_base_lsq_plane(base_atoms_coords);
-   if (!lsq_plane.has_value())
-      throw std::runtime_error("base lsq plane has no value");
-
-   markup_info.base_ring_centre = lsq_plane.value().centre();
-   markup_info.base_ring_normal = lsq_plane.value().normal();
-
-   char altloc_char = altconf_in.empty() ? '\0' : altconf_in[0];
-
-   // find the phosphorus atom in this residue
-   for (const gemmi::Atom &atom : residue->atoms) {
-      if (atom.name == "P" && atom.altloc == altloc_char) {
-         clipper::Coord_orth p(atom.pos.x, atom.pos.y, atom.pos.z);
-         markup_info.phosphorus_position = p;
-         markup_info.projected_point = lsq_plane.value().projected_point(p);
-      }
-   }
-
-   // find the ribose atoms
-   const std::array<std::string, 5> ribose_names = {"C1'", "C2'", "C3'", "C4'", "O4'"};
-   std::vector<const gemmi::Atom *> ribose_atoms(5, nullptr);
-   for (const gemmi::Atom &atom : residue->atoms) {
-      if (atom.altloc != altloc_char) continue;
-      for (int i = 0; i < 5; i++) {
-         if (atom.name == ribose_names[i])
-            ribose_atoms[i] = &atom;
-      }
-   }
-
-   for (int i = 0; i < 5; i++) {
-      if (!ribose_atoms[i])
-         throw std::runtime_error("Not all atoms found in ribose.");
-      const gemmi::Atom &a = *ribose_atoms[i];
-      ribose_atoms_coords.emplace_back(a.pos.x, a.pos.y, a.pos.z);
-   }
-
-   const std::array<PUCKERED_ATOM_T, 5> possible_puckers = {
-      C1_PRIME, C2_PRIME, C3_PRIME, C4_PRIME, O4_PRIME
-   };
-   std::pair<float, float> most_deviant(0, 0);
-   for (int i_oop = 0; i_oop < 5; i_oop++) {
-      std::vector<clipper::Coord_orth> plane_coords;
-      for (int i = 0; i < 5; i++) {
-         if (i != i_oop)
-            plane_coords.push_back(ribose_atoms_coords[i]);
-      }
-      clipper::Coord_orth pt = ribose_atoms_coords[i_oop];
-      std::pair<double, double> dev = coot::lsq_plane_deviation(plane_coords, pt);
-      if (std::fabs(dev.first) > std::fabs(most_deviant.first)) {
-         most_deviant = {static_cast<float>(dev.first), static_cast<float>(dev.second)};
-         puckered_atom_ = possible_puckers[i_oop];
-      }
-   }
-   out_of_plane_distance = most_deviant.first;
-   plane_distortion = most_deviant.second;
-}
-
-float
-coot::pucker_analysis_info_gemmi_t::phosphate_distance_to_base_plane(gemmi::Residue *following_res) {
-
-   float oop = 0.0;
-   bool found = false;
-   char altloc_char = altconf.empty() ? '\0' : altconf[0];
-
-   for (const gemmi::Atom &atom : following_res->atoms) {
-      if (atom.name == "P" && atom.altloc == altloc_char) {
-         if (base_atoms_coords.size() < 4) {
-            std::string m = "Failed to find base atoms. Found ";
-            m += std::to_string(base_atoms_coords.size());
-            m += " atoms.";
-            throw std::runtime_error(m);
-         }
-         clipper::Coord_orth pt(atom.pos.x, atom.pos.y, atom.pos.z);
-         std::pair<double, double> oop_plus_dev = coot::lsq_plane_deviation(base_atoms_coords, pt);
-         oop = static_cast<float>(oop_plus_dev.first);
-         markup_info.phosphorus_position = pt;
-         lsq_plane_info_t lsq_plane(base_atoms_coords);
-         markup_info.projected_point = lsq_plane.projected_point(pt);
-         found = true;
-         break;
-      }
-   }
-   if (!found)
-      throw std::runtime_error("Failed to find following phosphate");
-   return oop;
-}
-
-float
-coot::pucker_analysis_info_gemmi_t::phosphate_distance(gemmi::Residue *following_res) {
-
-   if (!C1_prime)
-      throw std::runtime_error("C1' not found in this residue");
-   if (!N1_or_9)
-      throw std::runtime_error("N1/N9 not found in this residue");
-
-   float d = 0.0;
-   bool found = false;
-   char altloc_char = altconf.empty() ? '\0' : altconf[0];
-
-   for (const gemmi::Atom &atom : following_res->atoms) {
-      if (atom.name == "P" && atom.altloc == altloc_char) {
-         clipper::Coord_orth P_pt(atom.pos.x, atom.pos.y, atom.pos.z);
-         clipper::Coord_orth N_pt(N1_or_9->pos.x,  N1_or_9->pos.y,  N1_or_9->pos.z);
-         clipper::Coord_orth C_pt(C1_prime->pos.x, C1_prime->pos.y, C1_prime->pos.z);
-         clipper::Coord_orth CN = N_pt - C_pt;
-         clipper::Coord_orth CP = P_pt - C_pt;
-         double CN_d = clipper::Coord_orth::length(N_pt, C_pt);
-         double CP_d = clipper::Coord_orth::length(P_pt, C_pt);
-         if (CN_d > 0.0 && CP_d > 0.0) {
-            double cos_alpha = clipper::Coord_orth::dot(CN, CP) / (CN_d * CP_d);
-            double alpha = std::acos(cos_alpha);
-            d = static_cast<float>(std::sin(M_PI - alpha) * CP_d);
-            found = true;
-         }
-         break;
-      }
-   }
-   if (!found)
-      throw std::runtime_error("P not found in following residue");
-   return d;
-}
-
-std::string
-coot::pucker_analysis_info_gemmi_t::puckered_atom() const {
-
-   switch (puckered_atom_) {
-      case C1_PRIME: return "C1'";
-      case C2_PRIME: return "C2'";
-      case C3_PRIME: return "C3'";
-      case C4_PRIME: return "C4'";
-      case O4_PRIME: return "O4'";
-      default:       return "----";
-   }
-}
-
-json coot::pucker_analysis_info_gemmi_t::to_json() const {
-
-   json j;
-   j["altconf"]               = altconf;
-   j["pucker_name"]           = pucker_name;
-   j["plane_distortion"]      = plane_distortion;
-   j["out_of_plane_distance"] = out_of_plane_distance;
-   j["puckered_atom"]         = puckered_atom();
-   return j;
-}
-std::string coot::pucker_analysis_info_gemmi_t::classify_pucker(double P_deg) {
-   const std::array<std::string, 10> puckers = {
-         "C3'-endo",
-         "C4'-exo",
-         "O4'-endo",
-         "C1'-exo",
-         "C2'-endo",
-         "C3'-exo",
-         "C4'-endo",
-         "O4'-exo",
-         "C1'-endo",
-         "C2'-exo"
-     };
-
-   P_deg = std::fmod(P_deg, 360.0);
-   if (P_deg < 0.0)
-      P_deg += 360.0;
-
-   const auto index =static_cast<std::size_t>(std::floor((P_deg + 18.0) / 36.0)) % puckers.size();
-   return puckers[index];
-}
-
-void
-coot::pucker_analysis_info_gemmi_t::assign_base_atom_coords(gemmi::Residue *residue) {
-
-   // gemmi atom names are unpadded (e.g. "N1", "C2", "O4'") unlike the 4-char PDB-padded mmdb names
-   const std::vector<std::string> cytidine_base_names  = {"N1","C2","N3","C4","C5","C6","O2","N4"};
-   const std::vector<std::string> uracil_base_names    = {"N1","C2","N3","C4","C5","C6","O2","O4"};
-   const std::vector<std::string> adenine_base_names   = {"N9","C8","N7","C5","C4","N1","C2","N3","C6","N6"};
-   const std::vector<std::string> guanine_base_names   = {"N9","C8","N7","C5","C4","N1","C2","N3","C6","O6","N2"};
-   const std::vector<std::string> thymine_base_names   = {"N1","C2","N3","C4","C5","C6","O2","O4","C7"};
-
-   std::vector<std::string> base_names;
-   const std::string &res_name = residue->name;
-   if (res_name == "C" || res_name == "Cr" || res_name == "CYT" || res_name == "DC")
-      base_names = cytidine_base_names;
-   else if (res_name == "U" || res_name == "Ur" || res_name == "URA")
-      base_names = uracil_base_names;
-   else if (res_name == "A" || res_name == "Ar" || res_name == "ADE" || res_name == "DA")
-      base_names = adenine_base_names;
-   else if (res_name == "G" || res_name == "Gr" || res_name == "GUA" || res_name == "DG")
-      base_names = guanine_base_names;
-   else if (res_name == "T" || res_name == "Tr" || res_name == "THY" || res_name == "DT")
-      base_names = thymine_base_names;
-
-   char altloc_char = altconf.empty() ? '\0' : altconf[0];
-
-   for (const gemmi::Atom &atom : residue->atoms) {
-      if (atom.altloc != altloc_char) continue;
-      if (atom.name == "N1" || atom.name == "N9")
-         N1_or_9 = &atom;
-      if (atom.name == "C1'")
-         C1_prime = &atom;
-      if (!base_names.empty()) {
-         for (const std::string &bn : base_names) {
-            if (atom.name == bn) {
-               base_atoms_coords.emplace_back(atom.pos.x, atom.pos.y, atom.pos.z);
-               break;
-            }
-         }
-      }
-   }
 }
 
 void
@@ -558,8 +305,58 @@ coot::pucker_analysis_info_t::assign_base_atom_coords(mmdb::Residue *residue_p) 
          }
       }
    }
-} 
+}
 
+double coot::pucker_analysis_info_t::compute_pucker_parameter(std::vector<clipper::Coord_orth> &coordinates) {
+      clipper::Coord_orth c1_prime = coordinates[0];
+   clipper::Coord_orth c2_prime = coordinates[1];
+   clipper::Coord_orth c3_prime = coordinates[2];
+   clipper::Coord_orth c4_prime = coordinates[3];
+   clipper::Coord_orth o4_prime = coordinates[4];
+
+   double v_0 = clipper::Coord_orth::torsion(c4_prime, o4_prime, c1_prime, c2_prime);
+   double v_1 = clipper::Coord_orth::torsion(o4_prime, c1_prime, c2_prime, c3_prime);
+   double v_2 = clipper::Coord_orth::torsion(c1_prime, c2_prime, c3_prime, c4_prime);
+   double v_3 = clipper::Coord_orth::torsion(c2_prime, c3_prime, c4_prime, o4_prime);
+   double v_4 = clipper::Coord_orth::torsion(c3_prime, c4_prime, o4_prime, c1_prime);
+
+   constexpr double deg36_r = 36.0 * M_PI / 180.0;
+   constexpr double deg72_r = 72.0 * M_PI / 180.0;
+
+   double numerator = (v_4 + v_1) - (v_3 + v_0);
+   double denominator = 2.0 * v_2 * (std::sin(deg36_r) + std::sin(deg72_r));
+
+   double P_rad = std::atan2(numerator, denominator);
+   double P_deg = P_rad * 180.0 / M_PI;
+
+   // double taum = v_2 / std::cos(P_rad);
+
+   if (P_deg < 0)
+      P_deg += 360.0;
+   return P_deg;
+}
+std::string coot::pucker_analysis_info_t::classify_pucker(double P_deg) {
+   // https://pubs.acs.org/doi/10.1021/ja412079b Figure 1
+   const std::array<std::string, 10> puckers = {
+      "C3-endo",
+      "C4-exo",
+      "O4-endo",
+      "C1-exo",
+      "C2-endo",
+      "C3-exo",
+      "C4-endo",
+      "O4-exo",
+      "C1-endo",
+      "C2-exo"
+  };
+
+   P_deg = std::fmod(P_deg, 360.0);
+   if (P_deg < 0.0)
+      P_deg += 360.0;
+
+   const auto index =static_cast<std::size_t>(std::floor((P_deg + 18.0) / 36.0)) % puckers.size();
+   return puckers[index];
+}
 
 // Use the 3' phosphate of the following residue to calculate its out
 // of plane distance (the plane being the base plane).  Decide from
