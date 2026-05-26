@@ -354,7 +354,9 @@ std::string coot::pucker_analysis_info_t::classify_pucker(double P_deg) {
    if (P_deg < 0.0)
       P_deg += 360.0;
 
-   const auto index =static_cast<std::size_t>(std::floor((P_deg + 18.0) / 36.0)) % puckers.size();
+   // Canonical envelope pucker centres lie at P = 18° + 36°·k (Altona–Sundaralingam),
+   // so the nearest classification is given by floor(P_deg / 36) mod 10.
+   const auto index = static_cast<std::size_t>(std::floor(P_deg / 36.0)) % puckers.size();
    return puckers[index];
 }
 
