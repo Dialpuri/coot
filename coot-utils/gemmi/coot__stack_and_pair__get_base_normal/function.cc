@@ -1,0 +1,1 @@
+// intentionally empty — function body is inline in function.hh
