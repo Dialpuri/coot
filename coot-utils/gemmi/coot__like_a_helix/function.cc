@@ -1,0 +1,1 @@
+// Intentionally empty — like_a_helix_gemmi is defined inline in function.hh
