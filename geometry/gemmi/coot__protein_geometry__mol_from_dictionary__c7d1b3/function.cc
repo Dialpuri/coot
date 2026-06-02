@@ -1,0 +1,1 @@
+// Intentionally empty — function is defined inline in function.hh
