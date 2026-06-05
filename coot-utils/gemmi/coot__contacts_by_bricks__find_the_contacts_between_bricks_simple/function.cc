@@ -1,0 +1,1 @@
+// No out-of-line definitions needed — everything is inline in function.hh.
