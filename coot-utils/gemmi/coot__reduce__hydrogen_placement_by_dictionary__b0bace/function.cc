@@ -1,0 +1,1 @@
+// function.cc — intentionally empty. The function is defined inline in function.hh.
