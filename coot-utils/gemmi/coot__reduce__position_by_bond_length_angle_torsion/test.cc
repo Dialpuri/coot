@@ -2,88 +2,107 @@
 #include <gemmi/pdb.hpp>
 #include <gemmi/model.hpp>
 #include "function.hh"
-
-#include <clipper/core/clipper_types.h>
-#include <clipper/core/coords.h>
+#include <cmath>
 
 TEST(OracleTest, position_by_bond_length_angle_torsion) {
+    // Load PDB via gemmi
     gemmi::Structure st = gemmi::read_pdb_file("/lmb/home/jdialpuri/Development/coot-tooling/test-data/example.pdb");
 
-    gemmi::Model *model = &st.models[0];
-    ASSERT_NE(model, nullptr);
+    ASSERT_FALSE(st.models.empty());
 
-    const gemmi::Chain *chain = nullptr;
-    for (const gemmi::Chain &c : model->chains) {
-        if (c.name == "A") {
-            chain = &c;
-            break;
-        }
-    }
+    gemmi::Model& model = st.models[0];
+
+    gemmi::Chain* chain = model.find_chain("A");
     ASSERT_NE(chain, nullptr);
 
-    const gemmi::Residue *res0 = nullptr;
-    size_t idx = 0;
-    for (const gemmi::Residue &r : chain->residues) {
-        if (idx == 0) {
-            res0 = &r;
-            break;
-        }
-        ++idx;
-    }
-    ASSERT_NE(res0, nullptr);
-
-    // gemmi atom.name is trimmed (e.g. "CA" not " CA ")
-    const gemmi::Atom *ca = nullptr;
-    const gemmi::Atom *cb = nullptr;
-    for (const gemmi::Atom &a : res0->atoms) {
-        if (a.name == "CA") ca = &a;
-        if (a.name == "CB") cb = &a;
-    }
-    ASSERT_NE(ca, nullptr);
-    ASSERT_NE(cb, nullptr);
-
-    const gemmi::Atom *cg = nullptr;
-    idx = 0;
-    for (const gemmi::Residue &r : chain->residues) {
-        if (idx == 1) {
-            for (const gemmi::Atom &a : r.atoms) {
-                if (a.name == "CG") {
-                    cg = &a;
-                    break;
-                }
+    // Case 1: Valid atoms - ALA residue 10 chain A: CA, CB, C
+    {
+        gemmi::Residue* res = nullptr;
+        for (gemmi::Residue& r : chain->residues) {
+            if (r.seqid.num.value == 10) {
+                res = &r;
+                break;
             }
-            break;
         }
-        ++idx;
-    }
-    ASSERT_NE(cg, nullptr);
+        ASSERT_NE(res, nullptr);
 
-    // Case 1: Typical call with CA, CB, CG atoms
-    {
-        double bl = 1.5;
-        double angle_rad = clipper::Util::d2rad(109.5);
-        double torsion_rad = clipper::Util::d2rad(60.0);
+        const gemmi::Atom* at_1 = res->find_atom("CA", '*');  // CA
+        const gemmi::Atom* at_2 = res->find_atom("CB", '*');  // CB
+        const gemmi::Atom* at_3 = res->find_atom("C",  '*');  // C
 
-        clipper::Coord_orth pos = coot::reduce::position_by_bond_length_angle_torsion_gemmi(
-            ca, cb, cg, bl, angle_rad, torsion_rad);
+        ASSERT_NE(at_1, nullptr);
+        ASSERT_NE(at_2, nullptr);
+        ASSERT_NE(at_3, nullptr);
 
-        EXPECT_NEAR(pos.x(), 13.3816, 1e-4);
-        EXPECT_NEAR(pos.y(), 3.23037, 1e-4);
-        EXPECT_NEAR(pos.z(), 80.7018, 1e-4);
-    }
-
-    // Case 2: Same atoms, different torsion angle (0 radians)
-    {
         double bl = 1.09;
-        double angle_rad = clipper::Util::d2rad(109.5);
+        double angle_rad = 109.5 * M_PI / 180.0;
         double torsion_rad = 0.0;
 
-        clipper::Coord_orth pos = coot::reduce::position_by_bond_length_angle_torsion_gemmi(
-            ca, cb, cg, bl, angle_rad, torsion_rad);
+        clipper::Coord_orth result = coot::reduce::position_by_bond_length_angle_torsion_gemmi(at_1, at_2, at_3, bl, angle_rad, torsion_rad);
 
-        EXPECT_NEAR(pos.x(), 12.5955, 1e-4);
-        EXPECT_NEAR(pos.y(), 2.35747, 1e-4);
-        EXPECT_NEAR(pos.z(), 80.2108, 1e-4);
+        EXPECT_NEAR(result.x(), 26.6691, 1e-4);
+        EXPECT_NEAR(result.y(), 13.5967, 1e-4);
+        EXPECT_NEAR(result.z(), 66.903, 1e-4);
+    }
+
+    // Case 2: Different torsion angle (180 degrees)
+    {
+        gemmi::Residue* res = nullptr;
+        for (gemmi::Residue& r : chain->residues) {
+            if (r.seqid.num.value == 10) {
+                res = &r;
+                break;
+            }
+        }
+        ASSERT_NE(res, nullptr);
+
+        const gemmi::Atom* at_1 = res->find_atom("CA", '*');  // CA
+        const gemmi::Atom* at_2 = res->find_atom("CB", '*');  // CB
+        const gemmi::Atom* at_3 = res->find_atom("C",  '*');  // C
+
+        ASSERT_NE(at_1, nullptr);
+        ASSERT_NE(at_2, nullptr);
+        ASSERT_NE(at_3, nullptr);
+
+        double bl = 1.09;
+        double angle_rad = 109.5 * M_PI / 180.0;
+        double torsion_rad = M_PI; // 180 degrees
+
+        clipper::Coord_orth result = coot::reduce::position_by_bond_length_angle_torsion_gemmi(at_1, at_2, at_3, bl, angle_rad, torsion_rad);
+
+        EXPECT_NEAR(result.x(), 27.01, 1e-4);
+        EXPECT_NEAR(result.y(), 12.4384, 1e-4);
+        EXPECT_NEAR(result.z(), 65.2402, 1e-4);
+    }
+
+    // Case 3: Different residue - residue 20 chain A: N, CA, C
+    {
+        gemmi::Residue* res2 = nullptr;
+        for (gemmi::Residue& r : chain->residues) {
+            if (r.seqid.num.value == 20) {
+                res2 = &r;
+                break;
+            }
+        }
+        ASSERT_NE(res2, nullptr);
+
+        const gemmi::Atom* at_n = res2->find_atom("N",  '*');
+        const gemmi::Atom* at_ca = res2->find_atom("CA", '*');
+        const gemmi::Atom* at_c = res2->find_atom("C",  '*');
+
+        ASSERT_NE(at_n, nullptr);
+        ASSERT_NE(at_ca, nullptr);
+        ASSERT_NE(at_c, nullptr);
+
+        double bl = 1.09;
+        double angle_rad = 109.5 * M_PI / 180.0;
+        double torsion_rad = M_PI / 2.0; // 90 degrees
+
+        clipper::Coord_orth result = coot::reduce::position_by_bond_length_angle_torsion_gemmi(at_n, at_ca, at_c, bl, angle_rad, torsion_rad);
+
+        EXPECT_NEAR(result.x(), 24.316, 1e-4);
+        EXPECT_NEAR(result.y(), 6.6811, 1e-4);
+        EXPECT_NEAR(result.z(), 72.7011, 1e-4);
     }
 }
 
