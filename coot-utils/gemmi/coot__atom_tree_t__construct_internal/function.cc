@@ -1,16 +1,16 @@
 #include "function.hh"
+#include <stdexcept>
+#include <algorithm>
+#include <string>
 
-#include <gemmi/model.hpp>
-
+// Include the actual _gemmi port implementations
 #include "/lmb/home/jdialpuri/Development/coot-tooling/generated-tests/coot__atom_tree_t__fill_name_map/gemmi/function.hh"
 #include "/lmb/home/jdialpuri/Development/coot-tooling/generated-tests/coot__atom_tree_t__fill_atom_vertex_vec/gemmi/function.hh"
 
-#include "geometry/protein-geometry.hh"
-
 namespace coot {
 
-static bool residue_has_deuterium_atoms(const gemmi::Residue& res) {
-    for (const auto& atom : res.atoms) {
+static bool residue_has_deuterium_atoms(const gemmi::Residue& residue) {
+    for (const auto& atom : residue.atoms) {
         std::string atom_ele = atom.element.name();
         if (atom_ele == "D") {
             return true;
@@ -38,25 +38,27 @@ static bool altloc_matches(char atom_altl, const std::string& altconf) {
 }
 
 void construct_internal_gemmi(
-    const dictionary_residue_restraints_t& rest,
-    gemmi::Residue* res,
-    const std::string& altconf,
-    std::vector<std::pair<int,int>>& bonds_out,
-    std::map<std::string, map_index_t>& name_to_index_out,
-    std::vector<atom_vertex>& atom_vertex_vec_out)
-{
+    const dictionary_residue_restraints_t &rest,
+    gemmi::Residue *res,
+    const std::string &altconf,
+    std::vector<std::pair<int, int>> &bonds_out,
+    std::map<std::string, map_index_t> &name_to_index_out,
+    std::vector<atom_vertex> &atom_vertex_vec_out
+) {
+
     if (!res) {
-        throw std::runtime_error("Null residue in atom tree constructor");
+        std::string mess = "Null residue in atom tree constructor";
+        throw std::runtime_error(mess);
     }
 
     if (rest.tree.size() == 0) {
-        throw std::runtime_error(
-            "atom_tree_t()::construct_internal(): No tree in restraints for " + rest.comp_id());
+        std::string mess = "atom_tree_t()::construct_internal(): No tree in restraints for " + rest.comp_id();
+        throw std::runtime_error(mess);
     }
 
     // Build a local atom table for indexed access
     std::vector<const gemmi::Atom*> residue_atoms;
-    for (auto& atom : res->atoms) {
+    for (const auto& atom : res->atoms) {
         residue_atoms.push_back(&atom);
     }
     int n_residue_atoms = static_cast<int>(residue_atoms.size());
@@ -112,19 +114,19 @@ void construct_internal_gemmi(
         }
     }
 
-    // fill_name_map — uses existing _gemmi port
-    auto name_map = coot::fill_name_map_gemmi(*res, altconf);
-    name_to_index_out = name_map;
+    // Fill name map using the existing gemmi port
+    name_to_index_out = coot::fill_name_map_gemmi(*res, altconf);
 
-    // fill_atom_vertex_vec — uses existing _gemmi port
+    // Fill atom vertex vec using the existing gemmi port
     bool success_vertex = coot::fill_atom_vertex_vec_gemmi(
         rest, res, altconf, name_to_index_out, atom_vertex_vec_out);
     if (!success_vertex) {
-        throw std::runtime_error(
-            "Failed to fill atom vector from cif atom tree - bad tree?");
+        std::string mess = "Failed to fill atom vector from cif atom tree - bad tree?";
+        throw std::runtime_error(mess);
     }
 
     // fill_torsions — no port yet; skip (test cases don't use torsion restraints)
+
 }
 
 } // namespace coot
