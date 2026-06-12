@@ -1,91 +1,103 @@
 #pragma once
 
+#include <gemmi/model.hpp>
+#include <gemmi/math.hpp>
 #include <vector>
 #include <string>
 #include <iostream>
-#include <gemmi/model.hpp>
-#include <gemmi/math.hpp>
-#include <clipper/clipper.h>
+
 #include "mini-mol/mini-mol.hh"
 
-namespace coot { namespace minimol {
+#include "/lmb/home/jdialpuri/Development/coot-tooling/generated-tests/coot__minimol__atom__atom__9b7f96/gemmi/function.hh"
+#include "/lmb/home/jdialpuri/Development/coot-tooling/generated-tests/coot__minimol__residue__residue__7b6771/gemmi/function.hh"
 
-inline molecule molecule_gemmi(
-    const std::vector<gemmi::CRA>& atom_selection,
-    int n_atoms,
-    const std::vector<gemmi::Position>& atoms)
-{
-    molecule mol;
+namespace coot {
+namespace minimol {
 
-    if (int(atoms.size()) != n_atoms) {
-        std::cout << "ERROR:: inconsistence size in minimol molecule constructor"
-                  << std::endl;
-        return mol;
+class molecule_gemmi {
+public:
+  std::vector<fragment> fragments;
+  short have_cell;
+  short have_spacegroup;
+
+  molecule_gemmi(std::vector<gemmi::CRA> const& atom_selection,
+                 int n_atoms,
+                 std::vector<gemmi::Vec3> const& positions) {
+
+    if (int(atom_selection.size()) != n_atoms) {
+      std::cout << "ERROR:: inconsistence size in minimol molecule constructor"
+                << std::endl;
+      have_cell = 0;
+      have_spacegroup = 0;
+      return;
     }
 
     for (int iat = 0; iat < n_atoms; iat++) {
 
-        gemmi::CRA const& cra = atom_selection[iat];
-        gemmi::Chain const* chain_p = cra.chain;
-        gemmi::Residue const* residue_p = cra.residue;
-        gemmi::Atom const* atom_p = cra.atom;
+      gemmi::CRA cra = atom_selection[iat];
+      gemmi::Atom* at = cra.atom;
+      gemmi::Residue* residue_p = cra.residue;
+      gemmi::Chain* chain_p = cra.chain;
 
-        int resno = residue_p->seqid.num.value;
-        std::string res_name = residue_p->name;
-        std::string chain_id = chain_p->name;
+      if (!at || !residue_p || !chain_p) {
+        continue;
+      }
 
-        // Find the fragment (chain) or create one
-        bool found_fragment = false;
-        int ifrag_for_atom = -1;
-        for (unsigned int ifrag = 0; ifrag < mol.fragments.size(); ifrag++) {
-            if (mol.fragments[ifrag].fragment_id == chain_id) {
-                found_fragment = true;
-                ifrag_for_atom = static_cast<int>(ifrag);
-            }
+      int resno = residue_p->seqid.num.value;
+      std::string res_name = residue_p->name;
+      std::string chain_id = chain_p->name;
+
+      // now we have the properties of the atom, lets find where it
+      // goes in the minimol.  First we need to find the chain, then
+      // residue.  Then add the atom to the residue.
+
+      bool found_fragment = false;
+      int ifrag_for_atom = -1;
+      for (unsigned int ifrag = 0; ifrag < fragments.size(); ifrag++) {
+        if (fragments[ifrag].fragment_id == chain_id) {
+          found_fragment = true;
+          ifrag_for_atom = static_cast<int>(ifrag);
         }
+      }
 
-        if (!found_fragment) {
-            fragment frag(chain_id);
-            mol.fragments.push_back(frag);
-            ifrag_for_atom = static_cast<int>(mol.fragments.size()) - 1;
-        }
+      if (!found_fragment) {
+        fragment frag(chain_id);
+        fragments.push_back(frag);
+        ifrag_for_atom = static_cast<int>(fragments.size()) - 1;
+      }
 
-        // Find the residue or add one
-        bool found_residue = false;
-        if (resno <= mol.fragments[ifrag_for_atom].max_residue_number()) {
-            if (resno >= mol.fragments[ifrag_for_atom].min_res_no()) {
-                found_residue = true;
-            }
+      // now find the residue, or add one.
+      bool found_residue = false;
+      if (resno <= fragments[ifrag_for_atom].max_residue_number()) {
+        if (resno >= fragments[ifrag_for_atom].min_res_no()) {
+          found_residue = true;
         }
+      }
 
-        // Construct minimol atom from gemmi atom
-        coot::minimol::atom minimol_atom;
-        if (atom_p) {
-            minimol_atom.name = atom_p->name;
-            minimol_atom.element = atom_p->element.name();
-            minimol_atom.altLoc = atom_p->altloc;
-            minimol_atom.occupancy = atom_p->occ;
-            minimol_atom.temperature_factor = atom_p->b_iso;
-            minimol_atom.int_user_data = -1;
-        }
-        // Override position from the atoms vector (as in original)
-        minimol_atom.pos = clipper::Coord_orth(atoms[iat].x, atoms[iat].y, atoms[iat].z);
+      if (!found_residue) {
+        coot::minimol::residue res(resno);
+        res.name = res_name;
 
-        if (!found_residue) {
-            coot::minimol::residue res(resno);
-            res.name = res_name;
-            res.addatom(minimol_atom);
-            try {
-                mol.fragments[ifrag_for_atom].addresidue(res, 1);
-            } catch (const std::runtime_error &rte) {
-                std::cout << "ERROR:: minimol constructor " << rte.what() << std::endl;
-            }
-        } else {
-            mol.fragments[ifrag_for_atom][resno].addatom(minimol_atom);
+        // Build a minimol::atom from gemmi atom data using the ported atom_gemmi
+        coot::minimol::atom minimol_atom = coot::minimol::atom_gemmi(*at);
+        minimol_atom.pos = clipper::Coord_orth(positions[iat].x, positions[iat].y, positions[iat].z);
+        res.addatom(minimol_atom);
+        try {
+          fragments[ifrag_for_atom].addresidue(res, 1);
         }
+        catch (const std::runtime_error &rte) {
+          std::cout << "ERROR:: minimol constructor " << rte.what() << std::endl;
+        }
+      } else {
+        coot::minimol::atom minimol_atom = coot::minimol::atom_gemmi(*at);
+        minimol_atom.pos = clipper::Coord_orth(positions[iat].x, positions[iat].y, positions[iat].z);
+        fragments[ifrag_for_atom][resno].addatom(minimol_atom);
+      }
     }
 
-    return mol;
-}
+    have_cell = 0;
+    have_spacegroup = 0;
+  }
+};
 
-}} // namespace coot::minimol
+}}  // namespace coot::minimol

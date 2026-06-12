@@ -1,36 +1,66 @@
 #include <gtest/gtest.h>
 #include <gemmi/pdb.hpp>
 #include <gemmi/model.hpp>
-#include <gemmi/calculate.hpp>
 #include "function.hh"
 
-#include <vector>
-#include <cstdlib>
 #include <iostream>
+#include <sstream>
+#include <vector>
+
+TEST(OracleTest, minimol_molecule_constructor) {
+    gemmi::Structure st = gemmi::read_pdb_file("/lmb/home/jdialpuri/Development/coot-tooling/test-data/example.pdb");
+    gemmi::Model& model = st.models[0];
+
+    // Select only atoms from residue 1 of chain A
+    std::vector<gemmi::CRA> cra_vec;
+    std::vector<gemmi::Vec3> positions;
+
+    for (auto& chain : model.chains) {
+        if (chain.name != "A") continue;
+        for (auto& res : chain.residues) {
+            if (res.seqid.num.value != 1) continue;
+            for (auto& atom : res.atoms) {
+                cra_vec.push_back(gemmi::CRA{&chain, &res, &atom});
+                positions.push_back(atom.pos);
+            }
+        }
+    }
+
+    int n_sel = static_cast<int>(cra_vec.size());
+    EXPECT_EQ(n_sel, 8);
+    EXPECT_GT(n_sel, 0);
+    EXPECT_EQ(static_cast<int>(positions.size()), 8);
+
+    // Case 1: Valid constructor call with matching sizes
+    {
+        coot::minimol::molecule_gemmi min_mol(cra_vec, n_sel, positions);
+
+        EXPECT_EQ(static_cast<int>(min_mol.fragments.size()), 1);
+        EXPECT_EQ(min_mol.have_cell, 0);
+        EXPECT_EQ(min_mol.have_spacegroup, 0);
+
+        EXPECT_EQ(min_mol.fragments[0].fragment_id, "A");
+        EXPECT_EQ(static_cast<int>(min_mol.fragments[0].residues.size()), 2);
+
+        // residue_0
+        EXPECT_EQ(min_mol.fragments[0].residues[0].name, "");
+        EXPECT_EQ(min_mol.fragments[0].residues[0].seqnum, 1);
+        EXPECT_EQ(static_cast<int>(min_mol.fragments[0].residues[0].atoms.size()), 0);
+
+        // residue_1
+        EXPECT_EQ(min_mol.fragments[0].residues[1].name, "MET");
+        EXPECT_EQ(min_mol.fragments[0].residues[1].seqnum, 1);
+        EXPECT_EQ(static_cast<int>(min_mol.fragments[0].residues[1].atoms.size()), 8);
+    }
+
+    // Case 2: Mismatched sizes (atoms.size() != n_atoms) — triggers error guard
+    {
+        coot::minimol::molecule_gemmi min_mol2(cra_vec, 999, positions);
+        EXPECT_EQ(static_cast<int>(min_mol2.fragments.size()), 0);
+    }
+}
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
-    int r = RUN_ALL_TESTS();
-    std::fflush(nullptr);
-    _exit(r);
-}
-
-TEST(OracleTest, diagnostic) {
-    gemmi::Structure st = gemmi::read_pdb_file("/lmb/home/jdialpuri/Development/coot-tooling/test-data/example.pdb");
-
-    std::cerr << "Models: " << st.models.size() << std::endl;
-    std::cerr << "count_atom_sites: " << gemmi::count_atom_sites(st) << std::endl;
-    for (size_t mi = 0; mi < st.models.size(); mi++) {
-        auto& mod = st.models[mi];
-        std::cerr << "  Model " << mi << ": " << mod.chains.size() << " chains, " << gemmi::count_atom_sites(mod) << " sites" << std::endl;
-        for (auto& chain : mod.chains) {
-            int res_count = 0;
-            for (auto& res : chain.residues) res_count++;
-            int lig_count = 0;
-            for (auto& res : chain.get_ligands()) lig_count++;
-            int wat_count = 0;
-            for (auto& res : chain.get_waters()) wat_count++;
-            std::cerr << "    Chain " << chain.name << ": " << res_count << " res, " << lig_count << " lig, " << wat_count << " wat" << std::endl;
-        }
-    }
+    return RUN_ALL_TESTS();
 }
