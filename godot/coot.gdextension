@@ -1,0 +1,20 @@
+; Coot GDExtension descriptor.
+; Copy this into your Godot project, and put the built libcoot_godot.{dylib,so}
+; where the [libraries] paths below point (default: res://bin/).
+
+[configuration]
+entry_symbol = "coot_library_init"
+compatibility_minimum = "4.7"
+reloadable = true
+
+[libraries]
+macos.debug   = "res://bin/libcoot_godot.dylib"
+macos.release = "res://bin/libcoot_godot.dylib"
+linux.debug   = "res://bin/libcoot_godot.so"
+linux.release = "res://bin/libcoot_godot.so"
+windows.debug   = "res://bin/libcoot_godot.dll"
+windows.release = "res://bin/libcoot_godot.dll"
+
+; libcootapi and its dependency dylibs (clipper, mmdb2, gemmi, RDKit, GSL, ...)
+; must be resolvable at load time. Either install them on the loader path or copy
+; them next to libcoot_godot and rely on its @rpath. See godot/README.md.

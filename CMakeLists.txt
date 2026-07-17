@@ -748,6 +748,13 @@ set_target_properties(coot_headless_api PROPERTIES INSTALL_RPATH_USE_LINK_PATH T
 
 install(TARGETS cootmoleculestotriangles cootapi)
 
+# Godot GDExtension bindings for libcootapi (opt-in).
+# Enable with: -DBUILD_GODOT_BINDINGS=ON -DGODOT_CPP_DIR=/path/to/godot-cpp
+option(BUILD_GODOT_BINDINGS "Build the Godot GDExtension bindings (godot/)" OFF)
+if(BUILD_GODOT_BINDINGS)
+  add_subdirectory(godot)
+endif()
+
 install(FILES standard-residues.pdb  DESTINATION share/coot)
 
 install(FILES cod-types-db-normalized.bin DESTINATION share/coot)
