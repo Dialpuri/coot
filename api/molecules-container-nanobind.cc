@@ -1170,6 +1170,7 @@ NB_MODULE(coot_headless_api, m) {
          get_docstring_from_xml("ray_trace_image").c_str())
     .def("ray_trace_init",
          &molecules_container_t::ray_trace_init,
+         nb::arg("n_threads") = -1,
          get_docstring_from_xml("ray_trace_init").c_str())
     .def("ray_trace_shutdown",
          &molecules_container_t::ray_trace_shutdown,

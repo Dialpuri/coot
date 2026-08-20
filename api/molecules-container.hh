@@ -1293,7 +1293,12 @@ public:
    void set_gltf_pbr_metalicity_factor(int imol, float metalicity);
 
    //! Initialise the OSPRay ray-tracing engine. Call this before ray_trace_image().
-   void ray_trace_init();
+   //!
+   //! @param n_threads (optional) caps the number of threads (cores) that
+   //! OSPRay/Embree may use. The default (<= 0) uses all available hardware
+   //! threads. This must be set at initialisation, so it is an argument here
+   //! rather than a ray_trace_image() JSON parameter.
+   void ray_trace_init(int n_threads = -1);
 
    //! Shut down the OSPRay ray-tracing engine.
    void ray_trace_shutdown();
