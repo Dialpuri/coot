@@ -777,6 +777,20 @@ public:
    //! @return the new molecule index on success and -1 on failure
    int read_pdbqt(const std::string &file_name);
 
+   //! Read a Gaussian/ORCA "cube" file as a new model molecule and a new map.
+   //!
+   //! A cube file (e.g. an ORCA molecular-orbital or density cube) contains both
+   //! the atoms of the molecule and a volumetric grid. The atoms are read as a
+   //! model molecule (in true, Angstrom-converted coordinates) and the grid is
+   //! read as a map molecule that registers with the model. Orbital cubes (with
+   //! a negative lobe) are flagged as difference maps so both lobes are drawn.
+   //!
+   //! @param file_name is the name of the cube file
+   //!
+   //! @return a pair {imol_model, imol_map}; either element is -1 if that part
+   //!         could not be made (e.g. imol_map is -1 for a non-orthogonal grid)
+   std::pair<int, int> read_cube(const std::string &file_name);
+
    //! Get the AutoDock Vina scores for a molecule read from a PDBQT docking result.
    //!
    //! @param imol is the model molecule index

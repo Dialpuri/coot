@@ -1201,6 +1201,10 @@ NB_MODULE(coot_headless_api, m) {
          &molecules_container_t::read_pdb,
          nb::arg("file_name"),
          get_docstring_from_xml("read_pdb").c_str())
+    .def("read_cube",
+         &molecules_container_t::read_cube,
+         nb::arg("file_name"),
+         get_docstring_from_xml("read_cube").c_str())
     .def("read_small_molecule_cif",
          &molecules_container_t::read_small_molecule_cif,
          nb::arg("file_name"),
