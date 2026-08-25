@@ -59,6 +59,9 @@ nobase_dist_pkgpython_PYTHON = \
    coot_commands/speech.py                    \
    coot_commands/tools.py                     \
    coot_commands/retrieval.py                 \
+   coot_commands/playbooks.py                 \
+   coot_commands/scoring.py                   \
+   coot_commands/focus.py                     \
    coot_commands/context_tools.py             \
    coot_commands/socket_client.py             \
    coot_commands/agent.py                     \
@@ -70,6 +73,7 @@ nobase_dist_pkgpython_PYTHON = \
    coot_commands/commands/display.py          \
    coot_commands/commands/fetch.py            \
    coot_commands/commands/files.py            \
+   coot_commands/commands/fix.py              \
    coot_commands/commands/view.py             \
    coot_commands/commands/maps.py             \
    coot_commands/commands/navigation.py       \
