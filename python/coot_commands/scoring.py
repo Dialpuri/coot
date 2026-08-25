@@ -27,8 +27,9 @@ Three quantities describe a residue well enough to choose between fits:
 
 * **rotamer probability** - how usual the side-chain conformation is,
   from Coot's Richardson rotamer tables via ``coot.rotamer_score``.  It is
-  a *percentage* (0-100), not a fraction; see :data:`ROTAMER_OUTLIER` for
-  the bands.  Glycine and alanine have no rotamer, so it is ``None``.
+  a *percentage* (0-100), not a fraction, and what counts as bad depends on
+  the residue type - see :func:`rotamer_band_for`.  Glycine and alanine have
+  no rotamer, so it is ``None``.
 * **density fit** - the sum of the map value at each atom, weighted by
   occupancy (``coot.density_score_residue_py``).  Bigger is better, but it
   scales with the number of atoms, so it is comparable *for the same
@@ -60,8 +61,40 @@ except ImportError:
 # Rotamer probability bands, as percentages, following MolProbity's
 # convention - and Coot's own: its rotamer graphs saturate the distortion bar
 # at a probability of 0.3 (graphics-info-graphs.cc), which is the outlier line.
-ROTAMER_OUTLIER = 0.3    # below this: an outlier, worth fixing
-ROTAMER_ALLOWED = 2.0    # below this: allowed but unusual; above: favoured
+# What counts as a bad rotamer depends on the residue type, so there is no one
+# threshold.  The score is a probability density at the actual chi angles, and
+# the more chi angles a residue has the more rotamers it is spread across and
+# the lower every individual score becomes: arginine's *best possible* score is
+# about 9%, where valine's is about 73%.  A flat cut-off therefore calls a
+# badly-placed valine "favoured" and flags every arginine in the structure.
+#
+# The bands below come from the guidance in mcp/docs/skills/validation, which
+# gives the "good" figure per residue class; the outlier line is set at half of
+# it, which reproduces the worked examples given there (valine at 5% terrible,
+# leucine at 5% poor, arginine at 5% good but 0.5% poor).
+#
+# Grouping is by how many rotamers a residue type has, which is what drives the
+# score - not strictly by chi count, which is why leucine and isoleucine sit
+# with the three-chi group.
+_ROTAMER_BANDS = (
+    (("VAL", "THR", "SER", "CYS", "PRO"),               20.0, 40.0),
+    (("PHE", "TYR", "ASP", "ASN", "HIS", "TRP"),        10.0, 20.0),
+    (("GLU", "GLN", "MET", "ILE", "LEU"),                5.0, 10.0),
+    (("LYS", "ARG"),                                     2.5,  5.0),
+)
+
+# For a residue type not listed above (a modified residue, say): the middle of
+# the range, so it is neither flagged nor excused on no evidence.
+DEFAULT_ROTAMER_BAND = (5.0, 10.0)
+
+
+def rotamer_band_for(res_name: str) -> Tuple[float, float]:
+    """``(outlier below, favoured at or above)`` for a residue type, in percent."""
+    name = (res_name or "").strip().upper()
+    for names, outlier, favoured in _ROTAMER_BANDS:
+        if name in names:
+            return outlier, favoured
+    return DEFAULT_ROTAMER_BAND
 
 # Residues with no side-chain torsions, so no rotamer to score or fit.
 NO_ROTAMER = frozenset(("GLY", "ALA"))
@@ -113,23 +146,31 @@ class ResidueScore:
         return self.density / self.n_atoms
 
     @property
+    def thresholds(self) -> Tuple[float, float]:
+        """This residue type's ``(outlier below, favoured at or above)``."""
+        return rotamer_band_for(self.res_name)
+
+    @property
     def is_outlier(self) -> bool:
         """True when the side chain is in a rotamer outlier conformation.
 
+        Judged against this residue type's own band, not a flat cut-off: an
+        arginine at 3% is unremarkable where a valine at 3% is badly wrong.
         A residue with no rotamer (glycine, alanine) is never an outlier; nor
         is one we could not score, since we should not claim a problem we did
         not measure.
         """
-        return self.rotamer is not None and self.rotamer < ROTAMER_OUTLIER
+        return self.rotamer is not None and self.rotamer < self.thresholds[0]
 
     @property
     def rotamer_band(self) -> str:
         """``"outlier"`` / ``"allowed"`` / ``"favoured"`` for the rotamer."""
         if self.rotamer is None:
             return "none"
-        if self.rotamer < ROTAMER_OUTLIER:
+        outlier, favoured = self.thresholds
+        if self.rotamer < outlier:
             return "outlier"
-        if self.rotamer < ROTAMER_ALLOWED:
+        if self.rotamer < favoured:
             return "allowed"
         return "favoured"
 
@@ -159,9 +200,11 @@ class ResidueScore:
         if self.rotamer <= 0.0:
             return ("rotamer 0% - matches no library rotamer (an outlier, or "
                     "the side chain has missing atoms);")
-        return (f"rotamer {self.rotamer:.2f}% ({self.rotamer_band}; outlier "
-                f"below {ROTAMER_OUTLIER:g}%, favoured above "
-                f"{ROTAMER_ALLOWED:g}%);")
+        outlier, favoured = self.thresholds
+        return (f"rotamer {self.rotamer:.2f}% ({self.rotamer_band}; for "
+                f"{self.res_name} outlier is below {outlier:g}% and favoured "
+                f"is {favoured:g}% or more - these depend on the residue "
+                f"type, so do not compare them across types);")
 
     def _density_phrase(self) -> str:
         if self.density is None:

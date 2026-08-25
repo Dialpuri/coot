@@ -642,6 +642,173 @@ def test_agent_explains_itself_when_there_is_nothing_to_fall_back_on():
     assert "OLLAMA_CONTEXT_LENGTH" in out
 
 
+# --- streaming ---------------------------------------------------------------
+#
+# The model can think for a long time before it calls anything, and a
+# non-streaming request shows none of it until the whole reply lands - the tab
+# just sits there. These feed the assembler a canned server-sent-event stream,
+# so the parsing is tested without a model server.
+
+def _sse(*chunks):
+    """Encode dicts as an OpenAI server-sent-event stream, [DONE] included."""
+    lines = []
+    for chunk in chunks:
+        lines.append(b"data: " + json.dumps(chunk).encode("utf-8"))
+        lines.append(b"")                       # blank separator, as servers send
+    lines.append(b"data: [DONE]")
+    return lines
+
+
+def _delta(**fields):
+    return {"choices": [{"index": 0, "delta": dict(fields)}]}
+
+
+def test_stream_assembles_the_same_shape_as_a_whole_reply():
+    from coot_commands.agent import _assemble_stream
+    events = []
+    message = _assemble_stream(
+        _sse(_delta(role="assistant", content="", reasoning="I should "),
+             _delta(reasoning="score it."),
+             _delta(content="Scored "),
+             _delta(content="A/45.")),
+        on_delta=events.append)
+    assert message["role"] == "assistant"
+    assert message["content"] == "Scored A/45."
+    assert message["reasoning"] == "I should score it."
+    # Reasoning is streamed fragment by fragment...
+    assert [e["text"] for e in events] == ["I should ", "score it."]
+    assert all(e["type"] == "thinking_delta" for e in events)
+    # ...but the answer is not: it is rendered as Markdown when it arrives,
+    # which needs whole lines rather than a token at a time.
+    assert not any("Scored" in e["text"] for e in events)
+
+
+def test_stream_reassembles_a_tool_call_split_across_chunks():
+    """Ollama sends a tool call whole; the protocol allows it in pieces."""
+    from coot_commands.agent import _assemble_stream
+    message = _assemble_stream(_sse(
+        _delta(tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                            "function": {"name": "score_residue",
+                                         "arguments": "{\"chain\""}}]),
+        _delta(tool_calls=[{"index": 0,
+                            "function": {"arguments": ":\"A\",\"resno\""}}]),
+        _delta(tool_calls=[{"index": 0,
+                            "function": {"arguments": ":\"45\"}"}}]),
+    ))
+    calls = message["tool_calls"]
+    assert len(calls) == 1
+    assert calls[0]["id"] == "call_1"
+    assert calls[0]["function"]["name"] == "score_residue"
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "chain": "A", "resno": "45"}
+
+
+def test_stream_keeps_parallel_tool_calls_apart_and_ordered():
+    from coot_commands.agent import _assemble_stream
+    message = _assemble_stream(_sse(
+        _delta(tool_calls=[{"index": 1, "id": "b",
+                            "function": {"name": "second", "arguments": "{}"}}]),
+        _delta(tool_calls=[{"index": 0, "id": "a",
+                            "function": {"name": "first", "arguments": "{}"}}]),
+    ))
+    # Merged by index, and returned in index order however they arrived.
+    assert [c["function"]["name"] for c in message["tool_calls"]] == \
+        ["first", "second"]
+
+
+def test_stream_survives_junk_frames():
+    from coot_commands.agent import _assemble_stream
+    message = _assemble_stream([
+        b": a comment line",                    # SSE comments
+        b"",
+        b"data: {not json}",                    # a truncated frame
+        b"data: {\"choices\": []}",             # no choices in this chunk
+        b"data: " + json.dumps(_delta(content="ok")).encode(),
+        b"data: [DONE]",
+        b"data: " + json.dumps(_delta(content="after done")).encode(),
+    ])
+    assert message["content"] == "ok"           # stops at [DONE]
+    assert "reasoning" not in message           # absent, not empty
+
+
+def _use_transport(fake):
+    """Swap in *fake* as agent._ollama_chat, so run_agent's own closure runs."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def swap():
+        original = agent._ollama_chat
+        agent._ollama_chat = fake
+        try:
+            yield
+        finally:
+            agent._ollama_chat = original
+    return swap()
+
+
+def test_agent_does_not_repeat_reasoning_that_was_streamed():
+    """Streamed fragments plus an aggregate event would print it twice.
+
+    Exercised through run_agent's *own* transport closure (by replacing
+    _ollama_chat rather than passing chat=), because the suppression lives
+    there - an injected chat cannot reach it.
+    """
+    def streaming(model, url, timeout, messages, tools, on_delta=None):
+        for piece in ("Let me ", "check."):
+            on_delta({"type": "thinking_delta", "text": piece})
+        return {"role": "assistant", "content": "done",
+                "reasoning": "Let me check."}
+
+    events = []
+    with _use_transport(streaming):
+        out = agent.run_agent("check it", top_k=None, playbook_k=0,
+                              on_event=events.append, verbose=False)
+    assert out == "done"
+    kinds = [e["type"] for e in events]
+    assert kinds.count("thinking_delta") == 2
+    assert "thinking" not in kinds          # not repeated whole underneath
+
+
+def test_agent_still_shows_reasoning_when_nothing_streamed():
+    """A server that does not stream must not lose the reasoning entirely."""
+    def whole(model, url, timeout, messages, tools, on_delta=None):
+        return {"role": "assistant", "content": "done",
+                "reasoning": "Let me check."}
+
+    events = []
+    with _use_transport(whole):
+        agent.run_agent("check it", top_k=None, playbook_k=0,
+                        on_event=events.append, verbose=False)
+    kinds = [e["type"] for e in events]
+    assert "thinking_delta" not in kinds
+    assert "thinking" in kinds              # the aggregate carries it instead
+
+
+def test_streamed_flag_is_per_turn_not_per_run():
+    """A turn that streams must not suppress a later turn that does not."""
+    turns = {"n": 0}
+
+    def sometimes(model, url, timeout, messages, tools, on_delta=None):
+        turns["n"] += 1
+        if turns["n"] == 1:
+            on_delta({"type": "thinking_delta", "text": "streamed"})
+            return {"role": "assistant", "content": None,
+                    "reasoning": "streamed",
+                    "tool_calls": [{"id": "c", "function": {
+                        "name": "add_water", "arguments": "{}"}}]}
+        return {"role": "assistant", "content": "done",
+                "reasoning": "not streamed"}
+
+    events = []
+    with _use_transport(sometimes):
+        agent.run_agent("do it", top_k=None, playbook_k=0,
+                        execute=lambda n, a: "ok",
+                        on_event=events.append, verbose=False)
+    kinds = [e["type"] for e in events]
+    assert "thinking_delta" in kinds        # turn 1 streamed
+    assert "thinking" in kinds              # turn 2 did not, and still showed
+
+
 # --- retrieval context -------------------------------------------------------
 #
 # A mid-conversation request is often meaningless alone ("oh no!! let's get 32
